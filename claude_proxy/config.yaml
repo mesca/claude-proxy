@@ -1,0 +1,17 @@
+model_list:
+  - model_name: "claude-opus-4-6"
+    litellm_params:
+      model: "claude-proxy/opus"
+
+  - model_name: "claude-sonnet-4-6"
+    litellm_params:
+      model: "claude-proxy/sonnet"
+
+  - model_name: "claude-haiku-4-5"
+    litellm_params:
+      model: "claude-proxy/haiku"
+
+litellm_settings:
+  custom_provider_map:
+    - provider: "claude-proxy"
+      custom_handler: handler.handler

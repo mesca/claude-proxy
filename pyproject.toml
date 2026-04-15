@@ -1,0 +1,58 @@
+[project]
+name = "claude-proxy"
+description = "LLM proxy using LiteLLM with a custom backend"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.13"
+dynamic = ["version"]
+dependencies = [
+    "litellm[proxy]>=1.83",
+    "loguru>=0.7",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=5.0",
+    "ruff>=0.8",
+    "pyright>=1.1",
+]
+
+[project.scripts]
+claude-proxy = "claude_proxy.__main__:main"
+
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
+fallback-version = "0.0.0+unknown"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "claude_proxy/_version.py"
+
+[tool.ruff]
+line-length = 88
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "S", "C4", "UP", "N", "SIM"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101", "S108"]
+
+[tool.pyright]
+pythonVersion = "3.13"
+typeCheckingMode = "strict"
+include = ["claude_proxy"]
+exclude = ["**/__pycache__", ".venv"]
+reportMissingTypeStubs = false
+reportUnknownMemberType = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --cov=claude_proxy --cov-report=term-missing"
+asyncio_mode = "auto"
