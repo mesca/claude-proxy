@@ -51,11 +51,30 @@ kill <PID>
 
 ## Available models
 
-| Model name          | Claude CLI `--model` |
-|---------------------|----------------------|
-| `claude-opus-4-6`   | `opus`               |
-| `claude-sonnet-4-6` | `sonnet`             |
-| `claude-haiku-4-5`  | `haiku`              |
+| Model name                    | Claude CLI flags                    |
+|-------------------------------|-------------------------------------|
+| `claude-opus-4-6`             | `--model opus`                      |
+| `claude-opus-4-6:thinking`    | `--model opus --effort max`         |
+| `claude-sonnet-4-6`           | `--model sonnet`                    |
+| `claude-sonnet-4-6:thinking`  | `--model sonnet --effort max`       |
+| `claude-haiku-4-5`            | `--model haiku`                     |
+| `claude-haiku-4-5:thinking`   | `--model haiku --effort max`        |
+
+The `:thinking` variants enable extended thinking (`--effort max`). Thinking content is sent as `reasoning_content` in SSE chunks.
+
+### Updating models
+
+When new Claude models become available, edit `claude_proxy/models.py` and regenerate the config:
+
+```bash
+claude-proxy update-models
+```
+
+This regenerates the bundled `config.yaml` from the model definitions. Reinstall after updating:
+
+```bash
+uv cache clean claude-proxy && uv tool install --force --no-cache .
+```
 
 ## Usage
 
@@ -76,8 +95,8 @@ curl http://localhost:4000/v1/chat/completions \
 curl http://localhost:4000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "claude-sonnet-4-6",
-    "messages": [{"role": "user", "content": "Hello!"}],
+    "model": "claude-sonnet-4-6:thinking",
+    "messages": [{"role": "user", "content": "What is 99*101?"}],
     "stream": true
   }'
 ```
@@ -116,10 +135,6 @@ CLAUDE_PROXY_CWD=/path/to/project claude-proxy
 {"model": "claude-sonnet-4-6", "messages": [...], "cwd": "/path/to/project"}
 ```
 
-### Thinking / reasoning
-
-When Claude uses extended thinking during streaming, the thought process is sent as `reasoning_content` in the SSE chunks — the standard format used by reasoning models in the OpenAI API.
-
 ## OpenCode configuration
 
 Add this to your `opencode.json` (project root or `~/.config/opencode/opencode.json`):
@@ -137,15 +152,12 @@ Add this to your `opencode.json` (project root or `~/.config/opencode/opencode.j
         "apiKey": "not-needed"
       },
       "models": {
-        "claude-opus-4-6": {
-          "name": "Claude Opus 4.6"
-        },
-        "claude-sonnet-4-6": {
-          "name": "Claude Sonnet 4.6"
-        },
-        "claude-haiku-4-5": {
-          "name": "Claude Haiku 4.5"
-        }
+        "claude-opus-4-6": { "name": "Claude Opus 4.6" },
+        "claude-opus-4-6:thinking": { "name": "Claude Opus 4.6 (thinking)" },
+        "claude-sonnet-4-6": { "name": "Claude Sonnet 4.6" },
+        "claude-sonnet-4-6:thinking": { "name": "Claude Sonnet 4.6 (thinking)" },
+        "claude-haiku-4-5": { "name": "Claude Haiku 4.5" },
+        "claude-haiku-4-5:thinking": { "name": "Claude Haiku 4.5 (thinking)" }
       }
     }
   }

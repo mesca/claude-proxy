@@ -22,11 +22,12 @@ from claude_proxy.handler import (
     ClaudeProxyHandler,
     _extract_prompt,
     _get_cwd,
-    _get_model,
+    _get_model_and_effort,
     _get_session_id,
     _is_new_conversation,
     handler,
 )
+from claude_proxy.models import generate_config, parse_model_string
 
 MODEL = "claude-proxy/default"
 FAKE_SESSION_ID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
@@ -213,12 +214,57 @@ class TestGetCwd:
         assert result is None or isinstance(result, str)
 
 
-class TestGetModel:
+class TestParseModelString:
     def test_default(self):
-        assert _get_model("default") is None
+        assert parse_model_string("default") == (None, None)
 
-    def test_specific_model(self):
-        assert _get_model("opus") == "opus"
+    def test_empty(self):
+        assert parse_model_string("") == (None, None)
+
+    def test_simple_model(self):
+        assert parse_model_string("sonnet") == ("sonnet", None)
+
+    def test_model_with_effort(self):
+        assert parse_model_string("sonnet:max") == ("sonnet", "max")
+
+    def test_opus_thinking(self):
+        assert parse_model_string("opus:max") == ("opus", "max")
+
+
+class TestGetModelAndEffort:
+    def test_default(self):
+        assert _get_model_and_effort("default") == (None, None)
+
+    def test_model_only(self):
+        assert _get_model_and_effort("opus") == ("opus", None)
+
+    def test_model_with_effort(self):
+        assert _get_model_and_effort("sonnet:max") == ("sonnet", "max")
+
+
+class TestBuildCommandEffort:
+    def test_no_effort(self):
+        cmd = build_command("hello", model="sonnet")
+        assert "--effort" not in cmd
+
+    def test_with_effort(self):
+        cmd = build_command("hello", model="sonnet", effort="max")
+        assert cmd[cmd.index("--effort") + 1] == "max"
+
+
+class TestGenerateConfig:
+    def test_generates_yaml(self):
+        config = generate_config()
+        assert "model_list:" in config
+        assert "claude-proxy/sonnet" in config
+        assert "claude-proxy/sonnet:max" in config
+        assert "custom_handler: handler.handler" in config
+
+    def test_has_thinking_variants(self):
+        config = generate_config()
+        assert 'claude-sonnet-4-6:thinking' in config
+        assert 'claude-opus-4-6:thinking' in config
+        assert 'claude-haiku-4-5:thinking' in config
 
 
 # --- Streaming tests ---

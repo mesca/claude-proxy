@@ -18,6 +18,7 @@ def build_command(
     *,
     session_id: str | None = None,
     model: str | None = None,
+    effort: str | None = None,
     streaming: bool = False,
 ) -> list[str]:
     """Build the claude CLI command arguments."""
@@ -42,6 +43,9 @@ def build_command(
 
     if model:
         cmd.extend(["--model", model])
+
+    if effort:
+        cmd.extend(["--effort", effort])
 
     return cmd
 
@@ -165,11 +169,12 @@ def run_sync(
     *,
     session_id: str | None = None,
     model: str | None = None,
+    effort: str | None = None,
     cwd: str | None = None,
     timeout: float | None = None,
 ) -> dict[str, Any]:
     """Run a non-streaming claude CLI call synchronously."""
-    cmd = build_command(prompt, session_id=session_id, model=model, streaming=False)
+    cmd = build_command(prompt, session_id=session_id, model=model, effort=effort, streaming=False)
     logger.debug("Running command: {} cwd={}", cmd, cwd)
 
     try:
@@ -199,11 +204,12 @@ async def run_async(
     *,
     session_id: str | None = None,
     model: str | None = None,
+    effort: str | None = None,
     cwd: str | None = None,
     timeout: float | None = None,
 ) -> dict[str, Any]:
     """Run a non-streaming claude CLI call asynchronously."""
-    cmd = build_command(prompt, session_id=session_id, model=model, streaming=False)
+    cmd = build_command(prompt, session_id=session_id, model=model, effort=effort, streaming=False)
     logger.debug("Running command: {} cwd={}", cmd, cwd)
 
     try:
@@ -243,11 +249,12 @@ def stream_sync(
     *,
     session_id: str | None = None,
     model: str | None = None,
+    effort: str | None = None,
     cwd: str | None = None,
     timeout: float | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Stream claude CLI output synchronously."""
-    cmd = build_command(prompt, session_id=session_id, model=model, streaming=True)
+    cmd = build_command(prompt, session_id=session_id, model=model, effort=effort, streaming=True)
     logger.debug("Streaming command: {} cwd={}", cmd, cwd)
 
     try:
@@ -284,11 +291,12 @@ async def stream_async(
     *,
     session_id: str | None = None,
     model: str | None = None,
+    effort: str | None = None,
     cwd: str | None = None,
     timeout: float | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """Stream claude CLI output asynchronously."""
-    cmd = build_command(prompt, session_id=session_id, model=model, streaming=True)
+    cmd = build_command(prompt, session_id=session_id, model=model, effort=effort, streaming=True)
     logger.debug("Streaming command: {} cwd={}", cmd, cwd)
 
     try:

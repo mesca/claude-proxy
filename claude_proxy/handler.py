@@ -18,6 +18,7 @@ from litellm.types.utils import (
 from claude_proxy import cli
 from claude_proxy.cli import ClaudeCliError
 from claude_proxy.log import logger
+from claude_proxy.models import parse_model_string
 
 
 def _default_cwd() -> str | None:
@@ -68,11 +69,9 @@ def _get_cwd(kwargs: dict[str, Any]) -> str | None:
     return _default_cwd()
 
 
-def _get_model(model: str) -> str | None:
-    """Strip provider prefix and return model name, or None for 'default'."""
-    if not model or model == "default":
-        return None
-    return model
+def _get_model_and_effort(model: str) -> tuple[str | None, str | None]:
+    """Parse model string into (cli_model, effort)."""
+    return parse_model_string(model)
 
 
 def _build_model_response(
@@ -155,13 +154,13 @@ class ClaudeProxyHandler(CustomLLM):
         self._log_request(model, messages, kwargs)
         prompt = _extract_prompt(messages)
         session_id = _get_session_id(kwargs, messages, self._session_id)
-        model_name = _get_model(model)
+        model_name, effort = _get_model_and_effort(model)
         cwd = _get_cwd(kwargs)
 
         if _is_new_conversation(messages):
             ClaudeProxyHandler._session_id = None
 
-        result = cli.run_sync(prompt, session_id=session_id, model=model_name, cwd=cwd)
+        result = cli.run_sync(prompt, session_id=session_id, model=model_name, effort=effort, cwd=cwd)
         self._update_session(result)
         return _build_model_response(result, model)
 
@@ -169,13 +168,13 @@ class ClaudeProxyHandler(CustomLLM):
         self._log_request(model, messages, kwargs)
         prompt = _extract_prompt(messages)
         session_id = _get_session_id(kwargs, messages, self._session_id)
-        model_name = _get_model(model)
+        model_name, effort = _get_model_and_effort(model)
         cwd = _get_cwd(kwargs)
 
         if _is_new_conversation(messages):
             ClaudeProxyHandler._session_id = None
 
-        result = await cli.run_async(prompt, session_id=session_id, model=model_name, cwd=cwd)
+        result = await cli.run_async(prompt, session_id=session_id, model=model_name, effort=effort, cwd=cwd)
         self._update_session(result)
         return _build_model_response(result, model)
 
@@ -183,13 +182,13 @@ class ClaudeProxyHandler(CustomLLM):
         self._log_request(model, messages, kwargs)
         prompt = _extract_prompt(messages)
         session_id = _get_session_id(kwargs, messages, self._session_id)
-        model_name = _get_model(model)
+        model_name, effort = _get_model_and_effort(model)
         cwd = _get_cwd(kwargs)
 
         if _is_new_conversation(messages):
             ClaudeProxyHandler._session_id = None
 
-        for event in cli.stream_sync(prompt, session_id=session_id, model=model_name, cwd=cwd):
+        for event in cli.stream_sync(prompt, session_id=session_id, model=model_name, effort=effort, cwd=cwd):
             # Capture session_id from result event
             if event.get("session_id"):
                 ClaudeProxyHandler._session_id = event["session_id"]
@@ -199,13 +198,13 @@ class ClaudeProxyHandler(CustomLLM):
         self._log_request(model, messages, kwargs)
         prompt = _extract_prompt(messages)
         session_id = _get_session_id(kwargs, messages, self._session_id)
-        model_name = _get_model(model)
+        model_name, effort = _get_model_and_effort(model)
         cwd = _get_cwd(kwargs)
 
         if _is_new_conversation(messages):
             ClaudeProxyHandler._session_id = None
 
-        async for event in cli.stream_async(prompt, session_id=session_id, model=model_name, cwd=cwd):
+        async for event in cli.stream_async(prompt, session_id=session_id, model=model_name, effort=effort, cwd=cwd):
             if event.get("session_id"):
                 ClaudeProxyHandler._session_id = event["session_id"]
             yield _stream_event_to_chunk(event)

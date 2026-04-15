@@ -5,16 +5,34 @@ import sys
 from pathlib import Path
 
 
+def _config_path() -> Path:
+    return Path(__file__).resolve().parent / "config.yaml"
+
+
+def update_models() -> None:
+    """Regenerate config.yaml from model definitions."""
+    from claude_proxy.models import generate_config
+
+    path = _config_path()
+    path.write_text(generate_config())
+    print(f"Updated {path}")  # noqa: T201
+
+
 def main() -> None:
+    # Handle subcommands before LiteLLM takes over sys.argv
+    if len(sys.argv) > 1 and sys.argv[1] == "update-models":
+        update_models()
+        return
+
     # Capture the user's working directory before LiteLLM changes anything
     os.environ.setdefault("CLAUDE_PROXY_CWD", os.getcwd())
 
     # Skip the remote model cost map fetch (adds seconds to startup)
     os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "true")
 
-    config_path = Path(__file__).resolve().parent / "config.yaml"
+    config_path = _config_path()
     if not config_path.exists():
-        print(f"Config not found: {config_path}", file=sys.stderr)  # noqa: T201
+        print("Config not found. Run: claude-proxy update-models", file=sys.stderr)  # noqa: T201
         sys.exit(1)
 
     # Build CLI args, injecting --config and --host defaults if not provided
