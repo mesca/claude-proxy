@@ -2,11 +2,9 @@
 
 OpenAI-compatible proxy that routes requests to the Claude CLI.
 
-Built with [LiteLLM](https://github.com/BerriAI/litellm) and a custom backend that calls `claude -p` as a subprocess.
-
 > **Disclaimer** — Use at your own risk. The authors make no claims regarding compliance with Anthropic's [Terms of Service](https://www.anthropic.com/legal/consumer-terms) or [Acceptable Use Policy](https://www.anthropic.com/legal/aup). It is your responsibility to review and comply with these policies, which may change at any time.
 >
-> This project calls the documented Claude CLI using your own authenticated account. No API keys are intercepted, no authentication is bypassed, and no proprietary systems are reverse-engineered.
+> This project calls the official Claude CLI as a subprocess using your own authenticated account. No API keys are intercepted, no authentication is bypassed, and no proprietary systems are reverse-engineered.
 
 <details>
 <summary><strong>Table of contents</strong></summary>
@@ -205,28 +203,26 @@ OpenCode sends Serena's tools to the proxy, Claude calls them via `tool_calls`, 
 
 ```mermaid
 flowchart TB
-    Client["Client
-    (OpenCode, curl, ...)"]
+    Client(["Client (OpenCode, curl, ...)"])
 
-    subgraph Proxy["claude-proxy"]
-        MW1["ToolCallsMiddleware
-        rewrites tool_calls to OpenAI format"]
-        MW2["ReasoningContentMiddleware
-        flattens reasoning_content for SSE"]
-        LiteLLM["LiteLLM Proxy
-        routes models to custom handler"]
-        Handler["ClaudeProxyHandler
-        extracts prompt, manages sessions"]
-        CLI["claude CLI subprocess
-        claude -p ... --resume &lt;uuid&gt;"]
+    subgraph proxy ["claude-proxy"]
+        direction TB
+        MW["ASGI Middleware\n• tool_calls rewriting\n• reasoning_content flattening"]
+        LiteLLM["LiteLLM Router"]
+        Handler["Handler\n• prompt extraction\n• session management"]
+        CLI["claude -p ··· --resume ‹uuid›"]
 
-        MW1 --> MW2 --> LiteLLM --> Handler --> CLI
+        MW --> LiteLLM --> Handler --> CLI
     end
 
-    Claude["Claude model"]
+    Claude(["Claude"])
 
-    Client -- "OpenAI API (HTTP)" --> MW1
-    CLI -- "Anthropic API (via CLI auth)" --> Claude
+    Client -- "OpenAI API" --> MW
+    CLI -- "Anthropic API\n(CLI auth)" --> Claude
+
+    style proxy fill:#f8f9fa,stroke:#333
+    style Client fill:#e3f2fd,stroke:#1565c0
+    style Claude fill:#fce4ec,stroke:#c62828
 ```
 
 Claude is sandboxed as a pure LLM — all built-in tools, skills, and MCP servers are disabled:
