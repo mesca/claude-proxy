@@ -66,7 +66,14 @@ def main() -> None:
 
     from litellm.proxy.proxy_cli import run_server  # type: ignore[import-untyped]
 
-    run_server()
+    # Suppress LiteLLM's verbose startup banner (hardcoded print statements)
+    _real_stdout = sys.stdout
+    sys.stdout = open(os.devnull, "w")  # noqa: SIM115, PTH123
+    try:
+        run_server()
+    finally:
+        sys.stdout.close()
+        sys.stdout = _real_stdout
 
 
 if __name__ == "__main__":
