@@ -50,9 +50,10 @@ def main() -> None:
     # Add middleware to fix reasoning_content in SSE streams
     from litellm.proxy.proxy_server import app  # type: ignore[import-untyped]
 
-    from claude_proxy.middleware import ReasoningContentMiddleware
+    from claude_proxy.middleware import ReasoningContentMiddleware, ToolCallsMiddleware
 
     app.add_middleware(ReasoningContentMiddleware)
+    app.add_middleware(ToolCallsMiddleware)
 
     from litellm.proxy.proxy_cli import run_server  # type: ignore[import-untyped]
 

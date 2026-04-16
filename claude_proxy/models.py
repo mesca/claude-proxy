@@ -18,7 +18,8 @@ MODELS = [
 # Effort level variants (suffix=None → default, no --effort flag)
 EFFORTS = [
     {"suffix": None, "effort": None},
-    {"suffix": "thinking", "effort": "max"},
+    {"suffix": "high", "effort": "high"},
+    {"suffix": "max", "effort": "max"},
 ]
 
 
@@ -32,7 +33,7 @@ def generate_config() -> str:
             effort_flag = effort["effort"]
 
             if suffix:
-                model_name = f"{model['name']}:{suffix}"
+                model_name = f"{model['name']}-{suffix}"
                 internal = f"{PROVIDER}/{model['alias']}:{effort_flag}"
             else:
                 model_name = model["name"]
@@ -50,6 +51,22 @@ def generate_config() -> str:
     lines.append("")
 
     return "\n".join(lines)
+
+
+def resolve_model_name(alias: str | None) -> str:
+    """Map a CLI alias to the full Anthropic model name.
+
+    Examples:
+        "opus"   → "claude-opus-4-6"
+        "sonnet" → "claude-sonnet-4-6"
+        None     → "claude-sonnet-4-6"  (default)
+    """
+    if not alias:
+        return MODELS[1]["name"]  # default to sonnet
+    for m in MODELS:
+        if m["alias"] == alias:
+            return m["name"]
+    return alias  # assume full name already
 
 
 def parse_model_string(model: str) -> tuple[str | None, str | None]:

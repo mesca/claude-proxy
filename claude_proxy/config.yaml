@@ -3,7 +3,11 @@ model_list:
     litellm_params:
       model: "claude-proxy/opus"
 
-  - model_name: "claude-opus-4-6:thinking"
+  - model_name: "claude-opus-4-6-high"
+    litellm_params:
+      model: "claude-proxy/opus:high"
+
+  - model_name: "claude-opus-4-6-max"
     litellm_params:
       model: "claude-proxy/opus:max"
 
@@ -11,7 +15,11 @@ model_list:
     litellm_params:
       model: "claude-proxy/sonnet"
 
-  - model_name: "claude-sonnet-4-6:thinking"
+  - model_name: "claude-sonnet-4-6-high"
+    litellm_params:
+      model: "claude-proxy/sonnet:high"
+
+  - model_name: "claude-sonnet-4-6-max"
     litellm_params:
       model: "claude-proxy/sonnet:max"
 
@@ -19,7 +27,11 @@ model_list:
     litellm_params:
       model: "claude-proxy/haiku"
 
-  - model_name: "claude-haiku-4-5:thinking"
+  - model_name: "claude-haiku-4-5-high"
+    litellm_params:
+      model: "claude-proxy/haiku:high"
+
+  - model_name: "claude-haiku-4-5-max"
     litellm_params:
       model: "claude-proxy/haiku:max"
 

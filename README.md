@@ -51,16 +51,19 @@ kill <PID>
 
 ## Available models
 
-| Model name                    | Claude CLI flags                    |
-|-------------------------------|-------------------------------------|
-| `claude-opus-4-6`             | `--model opus`                      |
-| `claude-opus-4-6:thinking`    | `--model opus --effort max`         |
-| `claude-sonnet-4-6`           | `--model sonnet`                    |
-| `claude-sonnet-4-6:thinking`  | `--model sonnet --effort max`       |
-| `claude-haiku-4-5`            | `--model haiku`                     |
-| `claude-haiku-4-5:thinking`   | `--model haiku --effort max`        |
+| Model name                   | Claude CLI flags                     |
+|------------------------------|--------------------------------------|
+| `claude-opus-4-6`            | `--model opus`                       |
+| `claude-opus-4-6-high`       | `--model opus --effort high`         |
+| `claude-opus-4-6-max`        | `--model opus --effort max`          |
+| `claude-sonnet-4-6`          | `--model sonnet`                     |
+| `claude-sonnet-4-6-high`     | `--model sonnet --effort high`       |
+| `claude-sonnet-4-6-max`      | `--model sonnet --effort max`        |
+| `claude-haiku-4-5`           | `--model haiku`                      |
+| `claude-haiku-4-5-high`      | `--model haiku --effort high`        |
+| `claude-haiku-4-5-max`       | `--model haiku --effort max`         |
 
-The `:thinking` variants enable extended thinking (`--effort max`). Thinking content is sent as `reasoning_content` in SSE chunks.
+The `-high` and `-max` variants set the `--effort` flag. Higher effort enables extended thinking — thinking content is sent as `reasoning_content` in SSE chunks.
 
 ### Updating models
 
@@ -141,9 +144,9 @@ Add this to your `opencode.json` (project root or `~/.config/opencode/opencode.j
 
 ```json
 {
-  "provider": "claude-proxy",
-  "model": "claude-sonnet-4-6",
-  "providers": {
+  "$schema": "https://opencode.ai/config.json",
+  "model": "claude-proxy/claude-sonnet-4-6",
+  "provider": {
     "claude-proxy": {
       "npm": "@ai-sdk/openai-compatible",
       "name": "Claude Proxy",
@@ -153,27 +156,140 @@ Add this to your `opencode.json` (project root or `~/.config/opencode/opencode.j
       },
       "models": {
         "claude-opus-4-6": { "name": "Claude Opus 4.6" },
-        "claude-opus-4-6:thinking": { "name": "Claude Opus 4.6 (thinking)" },
+        "claude-opus-4-6-high": { "name": "Claude Opus 4.6 (high effort)" },
+        "claude-opus-4-6-max": { "name": "Claude Opus 4.6 (max effort)" },
         "claude-sonnet-4-6": { "name": "Claude Sonnet 4.6" },
-        "claude-sonnet-4-6:thinking": { "name": "Claude Sonnet 4.6 (thinking)" },
+        "claude-sonnet-4-6-high": { "name": "Claude Sonnet 4.6 (high effort)" },
+        "claude-sonnet-4-6-max": { "name": "Claude Sonnet 4.6 (max effort)" },
         "claude-haiku-4-5": { "name": "Claude Haiku 4.5" },
-        "claude-haiku-4-5:thinking": { "name": "Claude Haiku 4.5 (thinking)" }
+        "claude-haiku-4-5-high": { "name": "Claude Haiku 4.5 (high effort)" },
+        "claude-haiku-4-5-max": { "name": "Claude Haiku 4.5 (max effort)" }
       }
     }
   }
 }
 ```
 
+### With Serena MCP
+
+[Serena](https://github.com/oraios/serena) provides code intelligence tools (find symbols, read definitions, navigate references). To use Serena with OpenCode through the proxy, add a `mcp` section to your `opencode.json`:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "claude-proxy/claude-sonnet-4-6",
+  "provider": {
+    "claude-proxy": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Claude Proxy",
+      "options": {
+        "baseURL": "http://localhost:4000/v1",
+        "apiKey": "not-needed"
+      },
+      "models": {
+        "claude-opus-4-6": { "name": "Claude Opus 4.6" },
+        "claude-opus-4-6-high": { "name": "Claude Opus 4.6 (high effort)" },
+        "claude-opus-4-6-max": { "name": "Claude Opus 4.6 (max effort)" },
+        "claude-sonnet-4-6": { "name": "Claude Sonnet 4.6" },
+        "claude-sonnet-4-6-high": { "name": "Claude Sonnet 4.6 (high effort)" },
+        "claude-sonnet-4-6-max": { "name": "Claude Sonnet 4.6 (max effort)" },
+        "claude-haiku-4-5": { "name": "Claude Haiku 4.5" },
+        "claude-haiku-4-5-high": { "name": "Claude Haiku 4.5 (high effort)" },
+        "claude-haiku-4-5-max": { "name": "Claude Haiku 4.5 (max effort)" }
+      }
+    }
+  },
+  "mcp": {
+    "serena": {
+      "type": "local",
+      "command": ["uvx", "--from", "serena-agent", "serena", "start-mcp-server", "--project-from-cwd"]
+    }
+  }
+}
+```
+
+The `--project-from-cwd` flag auto-detects the project from the working directory. Start the proxy from your project directory and use OpenCode as usual. OpenCode sends Serena's tools to the proxy, Claude calls them, and OpenCode executes them locally via Serena.
+
+**Test prompt**: Try asking OpenCode: `Find the definition of the main function and list all symbols in the entry point file.`
+
+## Tool support
+
+The proxy supports the OpenAI tool calling protocol. Clients send tool definitions in the `tools` field, and Claude responds with `tool_calls` when it wants to use a tool. The client executes the tool and sends results back.
+
+### How it works
+
+1. Client sends `tools` in the request — the proxy injects tool definitions into Claude's system prompt
+2. Claude responds with a JSON `tool_calls` object — the proxy parses it and returns an OpenAI-format `tool_calls` response with `finish_reason: "tool_calls"`
+3. Client executes the tools and sends results as `tool` role messages — the proxy formats them in XML tags and resumes the session
+4. Claude continues with a text response (or more tool calls)
+
+### Example: tool call request
+
+```bash
+curl http://localhost:4000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "claude-sonnet-4-6",
+    "messages": [{"role": "user", "content": "Read the file hello.py"}],
+    "tools": [{
+      "type": "function",
+      "function": {
+        "name": "read_file",
+        "description": "Read a file from disk",
+        "parameters": {
+          "type": "object",
+          "properties": {"path": {"type": "string"}},
+          "required": ["path"]
+        }
+      }
+    }]
+  }'
+```
+
+### Example: sending tool results
+
+```bash
+curl http://localhost:4000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "claude-sonnet-4-6",
+    "messages": [
+      {"role": "user", "content": "Read hello.py"},
+      {"role": "assistant", "content": null, "tool_calls": [
+        {"id": "call_1", "type": "function", "function": {"name": "read_file", "arguments": "{\"path\":\"hello.py\"}"}}
+      ]},
+      {"role": "tool", "tool_call_id": "call_1", "name": "read_file", "content": "print(\"hello world\")"}
+    ],
+    "tools": [{
+      "type": "function",
+      "function": {
+        "name": "read_file",
+        "description": "Read a file from disk",
+        "parameters": {
+          "type": "object",
+          "properties": {"path": {"type": "string"}},
+          "required": ["path"]
+        }
+      }
+    }]
+  }'
+```
+
+### System prompt passthrough
+
+The client's `system` message is always passed to Claude via `--append-system-prompt`, both for tool-using and tool-free requests.
+
 ## CLI flags
 
 Every request to the Claude CLI includes these flags:
 
-| Flag                              | Purpose                               |
-|-----------------------------------|---------------------------------------|
-| `--allowedTools ""`               | Disable all tools (passthrough mode)  |
-| `--disable-slash-commands`        | Disable all skills                    |
-| `--strict-mcp-config`            | Disable all MCP servers               |
-| `--dangerously-skip-permissions` | Skip permission prompts               |
+| Flag                              | Purpose                                         |
+|-----------------------------------|--------------------------------------------------|
+| `--tools ""`                      | Remove built-in tool descriptions from prompt    |
+| `--allowedTools ""`               | Block execution of any remaining tools           |
+| `--disable-slash-commands`        | Disable all skills                               |
+| `--strict-mcp-config`            | Disable all MCP servers                           |
+| `--dangerously-skip-permissions` | Skip permission prompts                           |
 
 Claude acts as a pure LLM — all tool use (file reading, editing, shell commands) is handled by the client (e.g. OpenCode).
 

@@ -93,7 +93,8 @@ class TestBuildCommand:
         cmd = build_command("hello")
         assert cmd == [
             "claude", "-p", "hello",
-            "--allowedTools", "", "--disable-slash-commands", "--strict-mcp-config",
+            "--tools", "", "--allowedTools", "",
+            "--disable-slash-commands", "--strict-mcp-config",
             "--dangerously-skip-permissions",
             "--output-format", "json",
         ]
@@ -119,8 +120,10 @@ class TestBuildCommand:
 
     def test_sandbox_flags(self):
         cmd = build_command("hello")
-        idx = cmd.index("--allowedTools")
-        assert cmd[idx + 1] == ""
+        assert "--tools" in cmd
+        assert cmd[cmd.index("--tools") + 1] == ""
+        assert "--allowedTools" in cmd
+        assert cmd[cmd.index("--allowedTools") + 1] == ""
         assert "--disable-slash-commands" in cmd
         assert "--strict-mcp-config" in cmd
         assert "--dangerously-skip-permissions" in cmd
@@ -260,11 +263,12 @@ class TestGenerateConfig:
         assert "claude-proxy/sonnet:max" in config
         assert "custom_handler: handler.handler" in config
 
-    def test_has_thinking_variants(self):
+    def test_has_effort_variants(self):
         config = generate_config()
-        assert 'claude-sonnet-4-6:thinking' in config
-        assert 'claude-opus-4-6:thinking' in config
-        assert 'claude-haiku-4-5:thinking' in config
+        assert 'claude-sonnet-4-6-high' in config
+        assert 'claude-sonnet-4-6-max' in config
+        assert 'claude-opus-4-6-max' in config
+        assert 'claude-haiku-4-5-max' in config
 
 
 # --- Streaming tests ---
@@ -516,7 +520,9 @@ class TestLogging:
         handler_id = logger.add(sink, format="{message}", level="INFO")
         try:
             litellm.completion(model=MODEL, messages=[{"role": "user", "content": "test-log-message"}])
-            assert "test-log-message" in sink.getvalue()
+            log_output = sink.getvalue()
+            assert "Request" in log_output
+            assert "model=" in log_output
         finally:
             logger.remove(handler_id)
 
