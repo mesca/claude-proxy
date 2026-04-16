@@ -17,6 +17,7 @@ from claude_proxy.handler import (
     _is_tool_result_turn,
     _parse_tool_response,
 )
+from claude_proxy.middleware import _parse_tool_calls_json
 from claude_proxy.models import resolve_model_name
 
 MODEL = "claude-proxy/default"
@@ -278,6 +279,49 @@ class TestParseToolResponse:
 
 
 # ---------------------------------------------------------------------------
+# Middleware: _parse_tool_calls_json (multiple tool calls)
+# ---------------------------------------------------------------------------
+
+
+class TestParseToolCallsJson:
+    def test_multiple_separate_objects(self):
+        text = (
+            '{"tool_calls": {"name": "read_file", "arguments": {"path": "a.py"}}}\n'
+            '{"tool_calls": {"name": "read_file", "arguments": {"path": "b.py"}}}'
+        )
+        result = _parse_tool_calls_json(text)
+        assert result is not None
+        assert len(result) == 2
+        assert result[0]["function"]["name"] == "read_file"
+        assert result[1]["function"]["name"] == "read_file"
+        assert result[0]["index"] == 0
+        assert result[1]["index"] == 1
+
+    def test_single_array(self):
+        text = json.dumps({"tool_calls": [
+            {"name": "read_file", "arguments": {"path": "a.py"}},
+            {"name": "write_file", "arguments": {"path": "b.py", "content": "x"}},
+        ]})
+        result = _parse_tool_calls_json(text)
+        assert result is not None
+        assert len(result) == 2
+
+    def test_text_between_tool_calls(self):
+        text = (
+            'Let me read both files.\n'
+            '{"tool_calls": {"name": "read_file", "arguments": {"path": "a.py"}}}\n'
+            'And also:\n'
+            '{"tool_calls": {"name": "read_file", "arguments": {"path": "b.py"}}}'
+        )
+        result = _parse_tool_calls_json(text)
+        assert result is not None
+        assert len(result) == 2
+
+    def test_no_tool_calls(self):
+        assert _parse_tool_calls_json("Just a normal response.") is None
+
+
+# ---------------------------------------------------------------------------
 # _get_tools
 # ---------------------------------------------------------------------------
 
@@ -345,7 +389,6 @@ class TestExtractSystemPrompt:
 
         result = _extract_system_prompt([{"role": "user", "content": "Hi"}])
         assert "helpful assistant" in result
-        assert "tool_result" in result
 
     def test_string_content(self):
         from claude_proxy.handler import _extract_system_prompt
@@ -353,13 +396,34 @@ class TestExtractSystemPrompt:
         msgs = [{"role": "system", "content": "Be helpful"}, {"role": "user", "content": "Hi"}]
         result = _extract_system_prompt(msgs)
         assert result.startswith("Be helpful")
-        assert "tool_result" in result
 
     def test_empty_content_returns_fallback(self):
         from claude_proxy.handler import _extract_system_prompt
 
         result = _extract_system_prompt([{"role": "system", "content": ""}])
         assert "helpful assistant" in result
+
+    def test_with_tools_includes_schemas(self):
+        from claude_proxy.handler import _extract_system_prompt
+        from claude_proxy.middleware import tools_var
+
+        tools_var.set([{
+            "type": "function",
+            "function": {
+                "name": "bash",
+                "description": "Run a command",
+                "parameters": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]},
+            },
+        }])
+        try:
+            result = _extract_system_prompt([{"role": "user", "content": "Hi"}])
+            assert "bash" in result
+            assert "command" in result
+            assert "required" in result
+            assert "tool_result" in result
+            assert "tool_calls" in result
+        finally:
+            tools_var.set(None)
 
 
 # ---------------------------------------------------------------------------

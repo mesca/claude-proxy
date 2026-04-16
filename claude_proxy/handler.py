@@ -27,7 +27,7 @@ from litellm.types.utils import (
 from claude_proxy import cli
 from claude_proxy.cli import ClaudeCliError
 from claude_proxy.log import logger
-from claude_proxy.middleware import session_var
+from claude_proxy.middleware import session_var, tools_var
 from claude_proxy.models import parse_model_string
 
 # ---------------------------------------------------------------------------
@@ -97,25 +97,56 @@ def _extract_prompt(messages: list[dict[str, Any]]) -> str:
     raise ClaudeCliError(400, err)
 
 
-_TOOL_RESULT_HINT = (
-    "\n\nWhen you call a tool, the result will be provided in your next message "
-    "as a <tool_result> XML tag. Treat it as the tool's output and continue naturally."
-)
+def _build_tool_instructions(tools: list[dict[str, Any]]) -> str:
+    """Build tool protocol instructions with full schemas from the request."""
+    lines = [
+        "\n\nYou have access to tools provided by the client. "
+        "To call a tool, respond with ONLY a JSON object:\n"
+        '{"tool_calls": [{"id": "<unique_id>", "name": "<tool>", "arguments": {...}}]}\n\n'
+        "Include ALL required parameters exactly as defined below. "
+        "To respond with text, just respond normally.\n\n"
+        "Tool results will be delivered as your next user message in "
+        "<tool_result> XML tags. This is the normal tool protocol — "
+        "treat the content as the tool's output and continue.\n\n"
+        "Available tools:",
+    ]
+    for tool in tools:
+        if tool.get("type") != "function":
+            continue
+        fn = tool.get("function", {})
+        name = fn.get("name", "")
+        desc = fn.get("description", "")
+        params = fn.get("parameters")
+        line = f"\n- {name}"
+        if desc:
+            line += f": {desc}"
+        lines.append(line)
+        if params:
+            lines.append(f"\n  Parameters: {json.dumps(params)}")
+    return "".join(lines)
 
 
 def _extract_system_prompt(messages: list[dict[str, Any]]) -> str:
-    """Extract the system message content, with a generic fallback.
+    """Extract the system message and append tool protocol instructions.
 
     Always returns a non-empty string so --system-prompt replaces Claude's
     default (which contains built-in tool descriptions we don't want).
-    Appends a hint about tool results so Claude recognizes them as its own.
+    If tools are available (from middleware context var), appends full
+    schemas and protocol instructions.
     """
+    client_system = ""
     for msg in messages:
         if msg.get("role") == "system":
-            text = _content_to_text(msg.get("content", ""))
-            if text:
-                return text + _TOOL_RESULT_HINT
-    return "You are a helpful assistant." + _TOOL_RESULT_HINT
+            client_system = _content_to_text(msg.get("content", ""))
+            break
+
+    prompt = client_system or "You are a helpful assistant."
+
+    tools = tools_var.get()
+    if tools:
+        prompt += _build_tool_instructions(tools)
+
+    return prompt
 
 
 def _get_model_and_effort(model: str) -> tuple[str | None, str | None]:

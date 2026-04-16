@@ -16,6 +16,11 @@ session_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "session_id", default=None,
 )
 
+# Tool definitions extracted from the request body, read by the handler.
+tools_var: contextvars.ContextVar[list[dict[str, Any]] | None] = contextvars.ContextVar(
+    "tools", default=None,
+)
+
 # Fixed namespace for deterministic UUID5 derivation.
 _SESSION_NAMESPACE = uuid.UUID("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
 
@@ -78,6 +83,9 @@ class ToolCallsMiddleware:
         # Set session ID from client header
         _detect_session(scope)
 
+        # Extract tools from request body (read-only, then replay)
+        receive = await _extract_tools_from_request(receive)
+
         # Buffer all response messages
         buffered: list[dict] = []
         headers_message: dict | None = None
@@ -114,6 +122,46 @@ class ToolCallsMiddleware:
             for i, msg in enumerate(buffered):
                 msg = {**msg, "more_body": i < len(buffered) - 1}
                 await send(msg)
+
+
+# ---------------------------------------------------------------------------
+# Request-side: extract tools from body
+# ---------------------------------------------------------------------------
+
+
+async def _extract_tools_from_request(receive: Callable) -> Callable:
+    """Read the request body, extract tools into context var, return a replay receive.
+
+    The body is read once, tools are extracted, then a new receive callable
+    replays the same body to the downstream app. No body modification.
+    """
+    body_chunks: list[bytes] = []
+    messages: list[dict] = []
+
+    # Buffer all body chunks
+    while True:
+        message = await receive()
+        messages.append(message)
+        body_chunks.append(message.get("body", b""))
+        if not message.get("more_body", False):
+            break
+
+    # Extract tools
+    try:
+        data = json.loads(b"".join(body_chunks))
+        tools = data.get("tools")
+        if tools and isinstance(tools, list):
+            tools_var.set(tools)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        pass
+
+    # Replay: return a receive that yields the buffered messages
+    replay_iter = iter(messages)
+
+    async def replay_receive() -> dict:
+        return next(replay_iter, {"type": "http.disconnect"})
+
+    return replay_receive
 
 
 # ---------------------------------------------------------------------------
@@ -196,40 +244,52 @@ def _flatten_reasoning(chunk: dict) -> None:
 
 
 def _parse_tool_calls_json(text: str) -> list[dict[str, Any]] | None:
-    """Try to find and parse tool_calls JSON anywhere in text.
+    """Find and parse ALL tool_calls JSON objects anywhere in text.
 
-    Uses raw_decode to handle cases where Claude adds text before or after
-    the JSON (e.g. "Let me check.\n{...}\n<tool_result>...").
+    Handles:
+    - Single object: {"tool_calls": {"name": "bash", ...}}
+    - Array: {"tool_calls": [{"name": "bash", ...}, ...]}
+    - Multiple separate objects: {"tool_calls": ...} ... {"tool_calls": ...}
+    - Text before/after the JSON
     """
-    idx = text.find('{"tool_calls"')
-    if idx == -1:
-        return None
-    try:
-        data, _ = json.JSONDecoder().raw_decode(text, idx)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(data, dict):
-        return None
-    raw = data.get("tool_calls")
-    if not raw:
-        return None
-    calls: list[dict[str, Any]] = [raw] if isinstance(raw, dict) else raw
-    if not isinstance(calls, list) or not calls:
-        return None
+    decoder = json.JSONDecoder()
     result: list[dict[str, Any]] = []
-    for i, tc in enumerate(calls):
-        raw_id = tc.get("id") or uuid.uuid4().hex[:8]
-        call_id = raw_id if str(raw_id).startswith("call_") else f"call_{raw_id}"
-        result.append({
-            "id": str(call_id),
-            "type": "function",
-            "index": i,
-            "function": {
-                "name": tc.get("name", ""),
-                "arguments": json.dumps(tc.get("arguments", {})),
-            },
-        })
-    return result
+    search_start = 0
+
+    while True:
+        idx = text.find('{"tool_calls"', search_start)
+        if idx == -1:
+            break
+        try:
+            data, end = decoder.raw_decode(text, idx)
+        except json.JSONDecodeError:
+            search_start = idx + 1
+            continue
+        search_start = end
+
+        if not isinstance(data, dict):
+            continue
+        raw = data.get("tool_calls")
+        if not raw:
+            continue
+        calls: list[dict[str, Any]] = [raw] if isinstance(raw, dict) else raw
+        if not isinstance(calls, list):
+            continue
+
+        for tc in calls:
+            raw_id = tc.get("id") or uuid.uuid4().hex[:8]
+            call_id = raw_id if str(raw_id).startswith("call_") else f"call_{raw_id}"
+            result.append({
+                "id": str(call_id),
+                "type": "function",
+                "index": len(result),
+                "function": {
+                    "name": tc.get("name", ""),
+                    "arguments": json.dumps(tc.get("arguments", {})),
+                },
+            })
+
+    return result or None
 
 
 def _try_rewrite_tool_calls(text: str) -> str | None:
