@@ -63,15 +63,32 @@ tmux kill-session -t proxy             # stop
 
 The `-high` and `-max` variants set the `--effort` flag. Higher effort enables extended thinking — thinking content is sent as `reasoning_content` in SSE chunks.
 
-### Updating models
+### Adding models
 
-When new Claude models become available, edit `MODELS` or `EFFORTS` in `claude_proxy/models.py` and reinstall:
+Show current models:
+
+```bash
+claude-proxy list-models
+```
+
+When new Claude models become available, edit `MODELS` in `claude_proxy/models.py`:
+
+```python
+MODELS = [
+    {"alias": "opus", "name": "claude-opus-4-6"},
+    {"alias": "sonnet", "name": "claude-sonnet-4-6"},
+    {"alias": "haiku", "name": "claude-haiku-4-5"},
+    # {"alias": "new-model", "name": "claude-new-model-x-y"},
+]
+```
+
+The `alias` is the CLI `--model` value. The `name` is the public model ID exposed to clients. Effort variants (`-high`, `-max`) are generated automatically. Reinstall and restart after editing:
 
 ```bash
 uv cache clean claude-proxy && uv tool install --force --no-cache .
 ```
 
-The config is generated at startup from model definitions — no manual regeneration step.
+Reference: [Anthropic model IDs](https://docs.anthropic.com/en/docs/about-claude/models)
 
 ## Usage
 

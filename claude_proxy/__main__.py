@@ -30,12 +30,32 @@ def _build_parser() -> argparse.ArgumentParser:
         "--stateless", action="store_true",
         help="Disable sessions — full history sent each turn",
     )
+    sub = parser.add_subparsers(dest="command")
+    sub.add_parser("list-models", help="Show available models and effort variants")
     return parser
+
+
+def _list_models() -> None:
+    """Print available models and effort variants."""
+    from claude_proxy.models import EFFORTS, MODELS
+
+    for model in MODELS:
+        for effort in EFFORTS:
+            suffix = effort["suffix"]
+            name = f"{model['name']}-{suffix}" if suffix else model["name"]
+            flags = f"--model {model['alias']}"
+            if effort["effort"]:
+                flags += f" --effort {effort['effort']}"
+            print(f"  {name:<30} {flags}")  # noqa: T201
 
 
 def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
+
+    if args.command == "list-models":
+        _list_models()
+        return
 
     # Store our flags as env vars (read by middleware/handler)
     if args.stateless:
