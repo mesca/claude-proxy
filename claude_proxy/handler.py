@@ -277,27 +277,30 @@ async def _stream_with_session_async(
     kw = {"model": model, "effort": effort, "system_prompt": system_prompt}
 
     if not sid:
+        logger.debug("No session, running stateless")
         async for event in cli.stream_async(prompt, **kw):
             yield event
         return
 
     try:
+        logger.debug("Trying --resume {}", sid)
         async for event in cli.stream_async(prompt, session_id=sid, **kw):
             yield event
         return
     except ClaudeCliError as e:
         if not _is_session_error(e):
             raise
-        logger.info("Session --resume failed, trying --session-id: {}", sid)
+        logger.info("--resume failed ({}), trying --session-id", e.message[:80])
 
     try:
+        logger.debug("Trying --session-id {}", sid)
         async for event in cli.stream_async(prompt, session_id=sid, create_session=True, **kw):
             yield event
         return
     except ClaudeCliError as e:
         if not _is_session_error(e):
             raise
-        logger.warning("Session --session-id also failed, running without session: {}", sid)
+        logger.warning("--session-id also failed ({}), running without session", e.message[:80])
 
     async for event in cli.stream_async(prompt, **kw):
         yield event
