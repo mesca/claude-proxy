@@ -73,25 +73,6 @@ def _extract_system_prompt(messages: list[dict[str, Any]]) -> str:
     return "You are a helpful assistant."
 
 
-def _is_new_conversation(messages: list[dict[str, Any]]) -> bool:
-    """Detect new conversation: no assistant messages in the history."""
-    return not any(m.get("role") == "assistant" for m in messages)
-
-
-def _get_session_id(
-    kwargs: dict[str, Any],
-    messages: list[dict[str, Any]],
-    stored_session_id: str | None,
-) -> str | None:
-    optional_params = kwargs.get("optional_params", {})
-    explicit = optional_params.get("session_id")
-    if explicit:
-        return str(explicit)
-    if _is_new_conversation(messages):
-        return None
-    return stored_session_id
-
-
 def _get_model_and_effort(model: str) -> tuple[str | None, str | None]:
     return parse_model_string(model)
 
@@ -250,7 +231,6 @@ def _build_model_response(
 
     return ModelResponse(
         model=model,
-        system_fingerprint=result.get("session_id"),
         choices=[
             Choices(
                 message=Message(role="assistant", content=result_text),
@@ -290,7 +270,6 @@ def _build_tool_call_response(
 
     return ModelResponse(
         model=model,
-        system_fingerprint=result.get("session_id"),
         choices=[
             Choices(
                 message=Message(role="assistant", content=None, tool_calls=tc_objects),
@@ -366,26 +345,12 @@ def _stream_event_to_chunk(event: dict[str, Any]) -> GenericStreamingChunk:
 class ClaudeProxyHandler(CustomLLM):
     """Custom LLM backend that routes requests to the claude CLI."""
 
-    _session_id: str | None = None
-
     def _log_request(self, model: str, messages: list, kwargs: dict) -> None:  # noqa: ANN401
-        optional_params = kwargs.get("optional_params", {})
-        tools = optional_params.get("tools")
-        tool_names = (
-            [t.get("function", {}).get("name") for t in tools if t.get("type") == "function"]
-            if tools else []
-        )
         logger.info(
-            "Request | model={model} tools={tools} messages={n}",
+            "Request | model={model} messages={n}",
             model=model,
-            tools=tool_names or None,
             n=len(messages),
         )
-
-    def _update_session(self, result: dict[str, Any]) -> None:
-        session_id = result.get("session_id")
-        if session_id:
-            ClaudeProxyHandler._session_id = session_id
 
     # -- Dispatch: route tool vs non-tool requests --
 
@@ -428,11 +393,7 @@ class ClaudeProxyHandler(CustomLLM):
     ) -> ModelResponse:
         client_system = _extract_system_prompt(messages)
         system_prompt = _build_tool_system_prompt(client_system, tools)
-        session_id = _get_session_id(kwargs, messages, self._session_id)
         model_name, effort = _get_model_and_effort(model)
-
-        if _is_new_conversation(messages):
-            ClaudeProxyHandler._session_id = None
 
         if _is_tool_result_turn(messages):
             prompt = _format_tool_results(messages)
@@ -440,10 +401,10 @@ class ClaudeProxyHandler(CustomLLM):
             prompt = _extract_prompt(messages)
 
         result = cli.run_sync(
-            prompt, session_id=session_id, model=model_name, effort=effort,
+            prompt, model=model_name, effort=effort,
             system_prompt=system_prompt,
         )
-        self._update_session(result)
+
 
         result_text = result.get("result", "")
         tool_calls = _parse_tool_response(result_text)
@@ -456,11 +417,7 @@ class ClaudeProxyHandler(CustomLLM):
     ) -> ModelResponse:
         client_system = _extract_system_prompt(messages)
         system_prompt = _build_tool_system_prompt(client_system, tools)
-        session_id = _get_session_id(kwargs, messages, self._session_id)
         model_name, effort = _get_model_and_effort(model)
-
-        if _is_new_conversation(messages):
-            ClaudeProxyHandler._session_id = None
 
         if _is_tool_result_turn(messages):
             prompt = _format_tool_results(messages)
@@ -468,10 +425,10 @@ class ClaudeProxyHandler(CustomLLM):
             prompt = _extract_prompt(messages)
 
         result = await cli.run_async(
-            prompt, session_id=session_id, model=model_name, effort=effort,
+            prompt, model=model_name, effort=effort,
             system_prompt=system_prompt,
         )
-        self._update_session(result)
+
 
         result_text = result.get("result", "")
         tool_calls = _parse_tool_response(result_text)
@@ -486,11 +443,7 @@ class ClaudeProxyHandler(CustomLLM):
     ) -> Iterator[GenericStreamingChunk]:
         client_system = _extract_system_prompt(messages)
         system_prompt = _build_tool_system_prompt(client_system, tools)
-        session_id = _get_session_id(kwargs, messages, self._session_id)
         model_name, effort = _get_model_and_effort(model)
-
-        if _is_new_conversation(messages):
-            ClaudeProxyHandler._session_id = None
 
         if _is_tool_result_turn(messages):
             prompt = _format_tool_results(messages)
@@ -502,11 +455,9 @@ class ClaudeProxyHandler(CustomLLM):
         buffered_chunks: list[GenericStreamingChunk] = []
 
         for event in cli.stream_sync(
-            prompt, session_id=session_id, model=model_name, effort=effort,
+            prompt, model=model_name, effort=effort,
             system_prompt=system_prompt,
         ):
-            if event.get("session_id"):
-                ClaudeProxyHandler._session_id = event["session_id"]
 
             chunk = _stream_event_to_chunk(event)
             text = event.get("text", "")
@@ -536,11 +487,7 @@ class ClaudeProxyHandler(CustomLLM):
     ) -> AsyncIterator[GenericStreamingChunk]:
         client_system = _extract_system_prompt(messages)
         system_prompt = _build_tool_system_prompt(client_system, tools)
-        session_id = _get_session_id(kwargs, messages, self._session_id)
         model_name, effort = _get_model_and_effort(model)
-
-        if _is_new_conversation(messages):
-            ClaudeProxyHandler._session_id = None
 
         if _is_tool_result_turn(messages):
             prompt = _format_tool_results(messages)
@@ -551,11 +498,9 @@ class ClaudeProxyHandler(CustomLLM):
         buffered_chunks: list[GenericStreamingChunk] = []
 
         async for event in cli.stream_async(
-            prompt, session_id=session_id, model=model_name, effort=effort,
+            prompt, model=model_name, effort=effort,
             system_prompt=system_prompt,
         ):
-            if event.get("session_id"):
-                ClaudeProxyHandler._session_id = event["session_id"]
 
             chunk = _stream_event_to_chunk(event)
             text = event.get("text", "")
@@ -581,53 +526,39 @@ class ClaudeProxyHandler(CustomLLM):
     def _cli_completion(self, model: str, messages: list[dict[str, Any]], **kwargs: Any) -> ModelResponse:
         prompt = _extract_prompt(messages)
         system_prompt = _extract_system_prompt(messages)
-        session_id = _get_session_id(kwargs, messages, self._session_id)
         model_name, effort = _get_model_and_effort(model)
 
-        if _is_new_conversation(messages):
-            ClaudeProxyHandler._session_id = None
-
         result = cli.run_sync(
-            prompt, session_id=session_id, model=model_name, effort=effort,
+            prompt, model=model_name, effort=effort,
             system_prompt=system_prompt,
         )
-        self._update_session(result)
+
         return _build_model_response(result, model)
 
     async def _cli_acompletion(self, model: str, messages: list[dict[str, Any]], **kwargs: Any) -> ModelResponse:
         prompt = _extract_prompt(messages)
         system_prompt = _extract_system_prompt(messages)
-        session_id = _get_session_id(kwargs, messages, self._session_id)
         model_name, effort = _get_model_and_effort(model)
 
-        if _is_new_conversation(messages):
-            ClaudeProxyHandler._session_id = None
-
         result = await cli.run_async(
-            prompt, session_id=session_id, model=model_name, effort=effort,
+            prompt, model=model_name, effort=effort,
             system_prompt=system_prompt,
         )
-        self._update_session(result)
+
         return _build_model_response(result, model)
 
     def _cli_streaming(self, model: str, messages: list[dict[str, Any]], **kwargs: Any) -> Iterator[GenericStreamingChunk]:
         prompt = _extract_prompt(messages)
         system_prompt = _extract_system_prompt(messages)
-        session_id = _get_session_id(kwargs, messages, self._session_id)
         model_name, effort = _get_model_and_effort(model)
-
-        if _is_new_conversation(messages):
-            ClaudeProxyHandler._session_id = None
 
         accumulated_text = ""
         buffered_chunks: list[GenericStreamingChunk] = []
 
         for event in cli.stream_sync(
-            prompt, session_id=session_id, model=model_name, effort=effort,
+            prompt, model=model_name, effort=effort,
             system_prompt=system_prompt,
         ):
-            if event.get("session_id"):
-                ClaudeProxyHandler._session_id = event["session_id"]
 
             chunk = _stream_event_to_chunk(event)
             text = event.get("text", "")
@@ -651,21 +582,15 @@ class ClaudeProxyHandler(CustomLLM):
     async def _cli_astreaming(self, model: str, messages: list[dict[str, Any]], **kwargs: Any) -> AsyncIterator[GenericStreamingChunk]:
         prompt = _extract_prompt(messages)
         system_prompt = _extract_system_prompt(messages)
-        session_id = _get_session_id(kwargs, messages, self._session_id)
         model_name, effort = _get_model_and_effort(model)
-
-        if _is_new_conversation(messages):
-            ClaudeProxyHandler._session_id = None
 
         accumulated_text = ""
         buffered_chunks: list[GenericStreamingChunk] = []
 
         async for event in cli.stream_async(
-            prompt, session_id=session_id, model=model_name, effort=effort,
+            prompt, model=model_name, effort=effort,
             system_prompt=system_prompt,
         ):
-            if event.get("session_id"):
-                ClaudeProxyHandler._session_id = event["session_id"]
 
             chunk = _stream_event_to_chunk(event)
             text = event.get("text", "")

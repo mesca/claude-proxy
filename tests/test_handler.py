@@ -22,8 +22,6 @@ from claude_proxy.handler import (
     ClaudeProxyHandler,
     _extract_prompt,
     _get_model_and_effort,
-    _get_session_id,
-    _is_new_conversation,
     handler,
 )
 from claude_proxy.models import generate_config, parse_model_string
@@ -107,16 +105,9 @@ class TestBuildCommand:
         assert cmd[cmd.index("--output-format") + 1] == "stream-json"
         assert "--verbose" in cmd
 
-    def test_with_session_id(self):
-        cmd = build_command("hello", session_id="abc-123")
-        assert cmd[cmd.index("--resume") + 1] == "abc-123"
-
     def test_with_model(self):
         cmd = build_command("hello", model="opus")
         assert cmd[cmd.index("--model") + 1] == "opus"
-
-    def test_no_session_id(self):
-        assert "--resume" not in build_command("hello")
 
     def test_no_model(self):
         assert "--model" not in build_command("hello")
@@ -162,52 +153,6 @@ class TestExtractPrompt:
     def test_empty_messages_raises(self):
         with pytest.raises(ClaudeCliError, match="No user message"):
             _extract_prompt([])
-
-
-class TestIsNewConversation:
-    def test_single_user_message(self):
-        assert _is_new_conversation([{"role": "user", "content": "Hi"}]) is True
-
-    def test_with_system_and_user(self):
-        messages = [{"role": "system", "content": "..."}, {"role": "user", "content": "Hi"}]
-        assert _is_new_conversation(messages) is True
-
-    def test_with_assistant_message(self):
-        messages = [
-            {"role": "user", "content": "Hi"},
-            {"role": "assistant", "content": "Hello!"},
-            {"role": "user", "content": "More"},
-        ]
-        assert _is_new_conversation(messages) is False
-
-
-class TestGetSessionId:
-    def test_explicit_session_id(self):
-        kwargs = {"optional_params": {"session_id": "explicit-id"}}
-        assert _get_session_id(kwargs, [], "stored-id") == "explicit-id"
-
-    def test_new_conversation_returns_none(self):
-        kwargs = {"optional_params": {}}
-        messages = [{"role": "user", "content": "Hi"}]
-        assert _get_session_id(kwargs, messages, "stored-id") is None
-
-    def test_continued_conversation_returns_stored(self):
-        kwargs = {"optional_params": {}}
-        messages = [
-            {"role": "user", "content": "Hi"},
-            {"role": "assistant", "content": "Hello!"},
-            {"role": "user", "content": "More"},
-        ]
-        assert _get_session_id(kwargs, messages, "stored-id") == "stored-id"
-
-    def test_continued_conversation_no_stored(self):
-        kwargs = {"optional_params": {}}
-        messages = [
-            {"role": "user", "content": "Hi"},
-            {"role": "assistant", "content": "Hello!"},
-            {"role": "user", "content": "More"},
-        ]
-        assert _get_session_id(kwargs, messages, None) is None
 
 
 class TestParseModelString:
@@ -323,21 +268,12 @@ def _mock_subprocess_run(returncode: int = 0, stdout: str = "", stderr: str = ""
     return mock
 
 
-@pytest.fixture(autouse=True)
-def _reset_session():
-    """Reset stored session between tests."""
-    ClaudeProxyHandler._session_id = None
-    yield
-    ClaudeProxyHandler._session_id = None
-
-
 class TestCompletion:
     @patch("claude_proxy.cli.subprocess.run")
     def test_returns_response(self, mock_run):
         mock_run.return_value = _mock_subprocess_run(stdout=FAKE_CLI_RESULT)
         resp = litellm.completion(model=MODEL, messages=[{"role": "user", "content": "Hello"}])
         assert resp.choices[0].message.content == "Hello from Claude!"
-        assert resp.system_fingerprint == FAKE_SESSION_ID
 
     @patch("claude_proxy.cli.subprocess.run")
     def test_usage(self, mock_run):
@@ -358,60 +294,14 @@ class TestAsyncCompletion:
         assert resp.choices[0].message.content == "Hello from Claude!"
 
 
-class TestSessionAutoManagement:
+class TestStateless:
     @patch("claude_proxy.cli.subprocess.run")
-    def test_new_conversation_no_resume(self, mock_run):
+    def test_no_resume_flag(self, mock_run):
         mock_run.return_value = _mock_subprocess_run(stdout=FAKE_CLI_RESULT)
         litellm.completion(model=MODEL, messages=[{"role": "user", "content": "Hi"}])
         cmd = mock_run.call_args[0][0]
         assert "--resume" not in cmd
-
-    @patch("claude_proxy.cli.subprocess.run")
-    def test_stores_session_id(self, mock_run):
-        mock_run.return_value = _mock_subprocess_run(stdout=FAKE_CLI_RESULT)
-        litellm.completion(model=MODEL, messages=[{"role": "user", "content": "Hi"}])
-        assert ClaudeProxyHandler._session_id == FAKE_SESSION_ID
-
-    @patch("claude_proxy.cli.subprocess.run")
-    def test_continued_conversation_resumes(self, mock_run):
-        mock_run.return_value = _mock_subprocess_run(stdout=FAKE_CLI_RESULT)
-        # First request — new session
-        litellm.completion(model=MODEL, messages=[{"role": "user", "content": "Hi"}])
-        # Second request — has assistant message → continuation
-        litellm.completion(
-            model=MODEL,
-            messages=[
-                {"role": "user", "content": "Hi"},
-                {"role": "assistant", "content": "Hello!"},
-                {"role": "user", "content": "More"},
-            ],
-        )
-        cmd = mock_run.call_args[0][0]
-        assert "--resume" in cmd
-        assert cmd[cmd.index("--resume") + 1] == FAKE_SESSION_ID
-
-    @patch("claude_proxy.cli.subprocess.run")
-    def test_new_conversation_resets_session(self, mock_run):
-        mock_run.return_value = _mock_subprocess_run(stdout=FAKE_CLI_RESULT)
-        # First conversation
-        litellm.completion(model=MODEL, messages=[{"role": "user", "content": "Hi"}])
-        assert ClaudeProxyHandler._session_id == FAKE_SESSION_ID
-        # New conversation (only user message)
-        litellm.completion(model=MODEL, messages=[{"role": "user", "content": "New topic"}])
-        cmd = mock_run.call_args[0][0]
-        assert "--resume" not in cmd
-
-    @patch("claude_proxy.cli.subprocess.run")
-    def test_explicit_session_id_overrides(self, mock_run):
-        mock_run.return_value = _mock_subprocess_run(stdout=FAKE_CLI_RESULT)
-        litellm.completion(
-            model=MODEL,
-            messages=[{"role": "user", "content": "Hi"}],
-            session_id="custom-id",
-        )
-        cmd = mock_run.call_args[0][0]
-        assert "--resume" in cmd
-        assert cmd[cmd.index("--resume") + 1] == "custom-id"
+        assert "--no-session-persistence" in cmd
 
 
 class TestStreaming:
@@ -448,20 +338,6 @@ class TestStreaming:
         texts = [c.choices[0].delta.content for c in chunks if c.choices[0].delta.content]
         full_text = "".join(texts)
         assert "answer" in full_text.lower()
-
-    @patch("claude_proxy.cli.subprocess.Popen")
-    def test_stores_session_from_stream(self, mock_popen):
-        mock_proc = MagicMock()
-        mock_proc.stdout = iter(line + "\n" for line in FAKE_STREAM_LINES)
-        mock_proc.stderr = MagicMock()
-        mock_proc.stderr.read.return_value = ""
-        mock_proc.wait.return_value = 0
-        mock_proc.returncode = 0
-        mock_popen.return_value = mock_proc
-
-        resp = litellm.completion(model=MODEL, messages=[{"role": "user", "content": "Hello"}], stream=True)
-        list(resp)  # consume all chunks
-        assert ClaudeProxyHandler._session_id == FAKE_SESSION_ID
 
 
 class TestAsyncStreaming:

@@ -101,21 +101,6 @@ curl http://localhost:4000/v1/chat/completions \
   }'
 ```
 
-### Sessions
-
-Sessions are managed automatically. The proxy detects new vs continued conversations from the message history:
-
-- **New conversation** (no assistant messages in the array): starts a fresh Claude session
-- **Continued conversation** (has assistant messages): resumes the previous session via `--resume`
-
-For explicit control, pass `session_id` in the request body:
-
-```json
-{"model": "claude-sonnet-4-6", "messages": [...], "session_id": "<session_id>"}
-```
-
-The session ID is returned in the `system_fingerprint` field of every response.
-
 ## Tool support
 
 The proxy supports the OpenAI tool calling protocol. All tool execution happens on the **client side** (e.g. OpenCode) — the proxy itself does not execute tools.
