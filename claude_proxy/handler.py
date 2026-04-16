@@ -158,6 +158,12 @@ def _get_session_id() -> str | None:
     return session_var.get()
 
 
+def _is_session_error(e: ClaudeCliError) -> bool:
+    """Check if a CLI error is session-related (not found or already in use)."""
+    msg = e.message.lower()
+    return "session" in msg or "conversation" in msg
+
+
 def _run_with_session(
     prompt: str,
     *,
@@ -166,21 +172,31 @@ def _run_with_session(
     system_prompt: str | None = None,
     timeout: float | None = None,
 ) -> dict[str, Any]:
-    """Run CLI with --resume, retrying with --session-id on session-not-found."""
+    """Run CLI with session retry: --resume → --session-id → no session."""
     sid = _get_session_id()
+    kw = {"model": model, "effort": effort, "system_prompt": system_prompt, "timeout": timeout}
+
+    if not sid:
+        return cli.run_sync(prompt, **kw)
+
+    # Try resume existing session
     try:
-        return cli.run_sync(
-            prompt, session_id=sid, model=model, effort=effort,
-            system_prompt=system_prompt, timeout=timeout,
-        )
+        return cli.run_sync(prompt, session_id=sid, **kw)
     except ClaudeCliError as e:
-        if sid and "session" in e.message.lower():
-            logger.info("Session {sid} not found, creating new", sid=sid)
-            return cli.run_sync(
-                prompt, session_id=sid, model=model, effort=effort,
-                system_prompt=system_prompt, timeout=timeout, create_session=True,
-            )
-        raise
+        if not _is_session_error(e):
+            raise
+        logger.info("Session --resume failed, trying --session-id: {}", sid)
+
+    # Try create new session with our UUID
+    try:
+        return cli.run_sync(prompt, session_id=sid, create_session=True, **kw)
+    except ClaudeCliError as e:
+        if not _is_session_error(e):
+            raise
+        logger.warning("Session --session-id also failed, running without session: {}", sid)
+
+    # Fall back to no session
+    return cli.run_sync(prompt, **kw)
 
 
 async def _run_with_session_async(
@@ -193,19 +209,26 @@ async def _run_with_session_async(
 ) -> dict[str, Any]:
     """Async version of _run_with_session."""
     sid = _get_session_id()
+    kw = {"model": model, "effort": effort, "system_prompt": system_prompt, "timeout": timeout}
+
+    if not sid:
+        return await cli.run_async(prompt, **kw)
+
     try:
-        return await cli.run_async(
-            prompt, session_id=sid, model=model, effort=effort,
-            system_prompt=system_prompt, timeout=timeout,
-        )
+        return await cli.run_async(prompt, session_id=sid, **kw)
     except ClaudeCliError as e:
-        if sid and "session" in e.message.lower():
-            logger.info("Session {sid} not found, creating new", sid=sid)
-            return await cli.run_async(
-                prompt, session_id=sid, model=model, effort=effort,
-                system_prompt=system_prompt, timeout=timeout, create_session=True,
-            )
-        raise
+        if not _is_session_error(e):
+            raise
+        logger.info("Session --resume failed, trying --session-id: {}", sid)
+
+    try:
+        return await cli.run_async(prompt, session_id=sid, create_session=True, **kw)
+    except ClaudeCliError as e:
+        if not _is_session_error(e):
+            raise
+        logger.warning("Session --session-id also failed, running without session: {}", sid)
+
+    return await cli.run_async(prompt, **kw)
 
 
 def _stream_with_session(
@@ -215,22 +238,31 @@ def _stream_with_session(
     effort: str | None = None,
     system_prompt: str | None = None,
 ) -> Iterator[dict[str, Any]]:
-    """Stream CLI with --resume, retrying with --session-id on session-not-found."""
+    """Stream CLI with session retry: --resume → --session-id → no session."""
     sid = _get_session_id()
+    kw = {"model": model, "effort": effort, "system_prompt": system_prompt}
+
+    if not sid:
+        yield from cli.stream_sync(prompt, **kw)
+        return
+
     try:
-        yield from cli.stream_sync(
-            prompt, session_id=sid, model=model, effort=effort,
-            system_prompt=system_prompt,
-        )
+        yield from cli.stream_sync(prompt, session_id=sid, **kw)
+        return
     except ClaudeCliError as e:
-        if sid and "session" in e.message.lower():
-            logger.info("Session {sid} not found, creating new", sid=sid)
-            yield from cli.stream_sync(
-                prompt, session_id=sid, model=model, effort=effort,
-                system_prompt=system_prompt, create_session=True,
-            )
-        else:
+        if not _is_session_error(e):
             raise
+        logger.info("Session --resume failed, trying --session-id: {}", sid)
+
+    try:
+        yield from cli.stream_sync(prompt, session_id=sid, create_session=True, **kw)
+        return
+    except ClaudeCliError as e:
+        if not _is_session_error(e):
+            raise
+        logger.warning("Session --session-id also failed, running without session: {}", sid)
+
+    yield from cli.stream_sync(prompt, **kw)
 
 
 async def _stream_with_session_async(
@@ -240,24 +272,35 @@ async def _stream_with_session_async(
     effort: str | None = None,
     system_prompt: str | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
-    """Async stream CLI with --resume, retrying with --session-id on session-not-found."""
+    """Async stream CLI with session retry: --resume → --session-id → no session."""
     sid = _get_session_id()
-    try:
-        async for event in cli.stream_async(
-            prompt, session_id=sid, model=model, effort=effort,
-            system_prompt=system_prompt,
-        ):
+    kw = {"model": model, "effort": effort, "system_prompt": system_prompt}
+
+    if not sid:
+        async for event in cli.stream_async(prompt, **kw):
             yield event
+        return
+
+    try:
+        async for event in cli.stream_async(prompt, session_id=sid, **kw):
+            yield event
+        return
     except ClaudeCliError as e:
-        if sid and "session" in e.message.lower():
-            logger.info("Session {sid} not found, creating new", sid=sid)
-            async for event in cli.stream_async(
-                prompt, session_id=sid, model=model, effort=effort,
-                system_prompt=system_prompt, create_session=True,
-            ):
-                yield event
-        else:
+        if not _is_session_error(e):
             raise
+        logger.info("Session --resume failed, trying --session-id: {}", sid)
+
+    try:
+        async for event in cli.stream_async(prompt, session_id=sid, create_session=True, **kw):
+            yield event
+        return
+    except ClaudeCliError as e:
+        if not _is_session_error(e):
+            raise
+        logger.warning("Session --session-id also failed, running without session: {}", sid)
+
+    async for event in cli.stream_async(prompt, **kw):
+        yield event
 
 
 def _get_tools(kwargs: dict[str, Any]) -> list[dict[str, Any]] | None:
