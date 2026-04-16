@@ -121,8 +121,8 @@ claude-proxy --stateless
 
 | Mode | Prompt caching | Context | Concurrency |
 |---|---|---|---|
-| Session (default) | 90% savings on history | Full — Claude remembers previous turns | Per-header — concurrent sessions work |
-| Stateless | System prompt only | Last message only | Unlimited |
+| Session (default) | 90% savings on history | Full — Claude remembers via `--resume` | Per-header — concurrent sessions work |
+| Stateless | System prompt only | Full — entire conversation sent each turn | Unlimited |
 
 ## Tool support
 

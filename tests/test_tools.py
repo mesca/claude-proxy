@@ -11,6 +11,7 @@ from claude_proxy.cli import build_command
 from claude_proxy.handler import (
     ClaudeProxyHandler,
     _build_tool_system_prompt,
+    _format_history,
     _format_tool_results,
     _get_tools,
     _is_tool_result_turn,
@@ -490,3 +491,54 @@ class TestToolRouting:
 
         assert resp.choices[0].message.content == "Hello from Claude!"
         assert resp.choices[0].finish_reason == "stop"
+
+
+# ---------------------------------------------------------------------------
+# Stateless mode: full history formatting
+# ---------------------------------------------------------------------------
+
+
+class TestFormatHistory:
+    def test_user_only(self):
+        msgs = [{"role": "user", "content": "Hello"}]
+        result = _format_history(msgs)
+        assert result == "[user]\nHello"
+
+    def test_multi_turn(self):
+        msgs = [
+            {"role": "user", "content": "Hi"},
+            {"role": "assistant", "content": "Hello!"},
+            {"role": "user", "content": "How are you?"},
+        ]
+        result = _format_history(msgs)
+        assert "[user]\nHi" in result
+        assert "[assistant]\nHello!" in result
+        assert "[user]\nHow are you?" in result
+        # Correct order
+        assert result.index("[user]\nHi") < result.index("[assistant]") < result.index("How are you?")
+
+    def test_system_excluded(self):
+        msgs = [
+            {"role": "system", "content": "You are helpful"},
+            {"role": "user", "content": "Hi"},
+        ]
+        result = _format_history(msgs)
+        assert "system" not in result.lower()
+        assert "[user]\nHi" in result
+
+    def test_tool_calls(self):
+        msgs = [
+            {"role": "user", "content": "Read foo.py"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "call_1", "type": "function", "function": {"name": "read_file", "arguments": '{"path":"foo.py"}'}}
+            ]},
+            {"role": "tool", "tool_call_id": "call_1", "name": "read_file", "content": "print('hello')"},
+            {"role": "user", "content": "Explain it"},
+        ]
+        result = _format_history(msgs)
+        assert "[user]\nRead foo.py" in result
+        assert "[assistant]" in result
+        assert "read_file" in result
+        assert '<tool_result name="read_file" call_id="call_1">' in result
+        assert "print('hello')" in result
+        assert "[user]\nExplain it" in result

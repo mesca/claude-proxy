@@ -8,6 +8,7 @@ Claude's response for structured tool_calls JSON.
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from typing import Any
@@ -44,13 +45,49 @@ def _content_to_text(content: str | list[dict[str, Any]] | None) -> str:
     return str(content) if content else ""
 
 
+def _format_history(messages: list[dict[str, Any]]) -> str:
+    """Format the full message history as a single prompt (stateless mode).
+
+    Reproduces OpenAI multi-turn behavior: each message is labeled with its
+    role so Claude can follow the conversation without --resume.
+    """
+    parts: list[str] = []
+    for msg in messages:
+        role = msg.get("role")
+        if role == "system":
+            continue  # handled separately via --system-prompt
+        content = _content_to_text(msg.get("content", ""))
+        if role == "user":
+            parts.append(f"[user]\n{content}")
+        elif role == "assistant":
+            tool_calls = msg.get("tool_calls")
+            if tool_calls:
+                tc_json = json.dumps(tool_calls, indent=2)
+                if content:
+                    parts.append(f"[assistant]\n{content}\n{tc_json}")
+                else:
+                    parts.append(f"[assistant]\n{tc_json}")
+            elif content:
+                parts.append(f"[assistant]\n{content}")
+        elif role == "tool":
+            name = msg.get("name", "unknown")
+            call_id = msg.get("tool_call_id", "")
+            parts.append(
+                f'<tool_result name="{name}" call_id="{call_id}">\n'
+                f"{content}\n"
+                f"</tool_result>"
+            )
+    return "\n\n".join(parts)
+
+
 def _extract_prompt(messages: list[dict[str, Any]]) -> str:
     """Extract the prompt to send to Claude.
 
-    If the last messages are tool results, format them as the prompt
-    (with optional trailing user message). Otherwise return the last
-    user message.
+    In stateless mode: format the full message history.
+    In session mode: return the last user message or tool results.
     """
+    if os.environ.get("CLAUDE_PROXY_STATELESS") == "1":
+        return _format_history(messages)
     if _is_tool_result_turn(messages):
         return _format_tool_results(messages)
     for msg in reversed(messages):
