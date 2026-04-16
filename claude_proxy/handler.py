@@ -133,6 +133,58 @@ async def _run_with_session_async(
         raise
 
 
+def _stream_with_session(
+    prompt: str,
+    *,
+    model: str | None = None,
+    effort: str | None = None,
+    system_prompt: str | None = None,
+) -> Iterator[dict[str, Any]]:
+    """Stream CLI with --resume, retrying with --session-id on session-not-found."""
+    sid = _get_session_id()
+    try:
+        yield from cli.stream_sync(
+            prompt, session_id=sid, model=model, effort=effort,
+            system_prompt=system_prompt,
+        )
+    except ClaudeCliError as e:
+        if sid and "session" in e.message.lower():
+            logger.info("Session {sid} not found, creating new", sid=sid)
+            yield from cli.stream_sync(
+                prompt, session_id=sid, model=model, effort=effort,
+                system_prompt=system_prompt, create_session=True,
+            )
+        else:
+            raise
+
+
+async def _stream_with_session_async(
+    prompt: str,
+    *,
+    model: str | None = None,
+    effort: str | None = None,
+    system_prompt: str | None = None,
+) -> AsyncIterator[dict[str, Any]]:
+    """Async stream CLI with --resume, retrying with --session-id on session-not-found."""
+    sid = _get_session_id()
+    try:
+        async for event in cli.stream_async(
+            prompt, session_id=sid, model=model, effort=effort,
+            system_prompt=system_prompt,
+        ):
+            yield event
+    except ClaudeCliError as e:
+        if sid and "session" in e.message.lower():
+            logger.info("Session {sid} not found, creating new", sid=sid)
+            async for event in cli.stream_async(
+                prompt, session_id=sid, model=model, effort=effort,
+                system_prompt=system_prompt, create_session=True,
+            ):
+                yield event
+        else:
+            raise
+
+
 def _get_tools(kwargs: dict[str, Any]) -> list[dict[str, Any]] | None:
     """Extract tool definitions from optional_params. Returns None if absent."""
     optional_params = kwargs.get("optional_params", {})
@@ -510,9 +562,8 @@ class ClaudeProxyHandler(CustomLLM):
         accumulated_text = ""
         buffered_chunks: list[GenericStreamingChunk] = []
 
-        sid = _get_session_id()
-        for event in cli.stream_sync(
-            prompt, session_id=sid, model=model_name, effort=effort,
+        for event in _stream_with_session(
+            prompt, model=model_name, effort=effort,
             system_prompt=system_prompt,
         ):
 
@@ -554,9 +605,8 @@ class ClaudeProxyHandler(CustomLLM):
         accumulated_text = ""
         buffered_chunks: list[GenericStreamingChunk] = []
 
-        sid = _get_session_id()
-        async for event in cli.stream_async(
-            prompt, session_id=sid, model=model_name, effort=effort,
+        async for event in _stream_with_session_async(
+            prompt, model=model_name, effort=effort,
             system_prompt=system_prompt,
         ):
 
@@ -613,9 +663,8 @@ class ClaudeProxyHandler(CustomLLM):
         accumulated_text = ""
         buffered_chunks: list[GenericStreamingChunk] = []
 
-        sid = _get_session_id()
-        for event in cli.stream_sync(
-            prompt, session_id=sid, model=model_name, effort=effort,
+        for event in _stream_with_session(
+            prompt, model=model_name, effort=effort,
             system_prompt=system_prompt,
         ):
 
@@ -646,9 +695,8 @@ class ClaudeProxyHandler(CustomLLM):
         accumulated_text = ""
         buffered_chunks: list[GenericStreamingChunk] = []
 
-        sid = _get_session_id()
-        async for event in cli.stream_async(
-            prompt, session_id=sid, model=model_name, effort=effort,
+        async for event in _stream_with_session_async(
+            prompt, model=model_name, effort=effort,
             system_prompt=system_prompt,
         ):
 
