@@ -3,20 +3,7 @@
 import argparse
 import os
 import sys
-from pathlib import Path
-
-
-def _config_path() -> Path:
-    return Path(__file__).resolve().parent / "config.yaml"
-
-
-def _update_models() -> None:
-    """Regenerate config.yaml from model definitions."""
-    from claude_proxy.models import generate_config
-
-    path = _config_path()
-    path.write_text(generate_config())
-    print(f"Updated {path}")  # noqa: T201
+import tempfile
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -29,9 +16,6 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-v", "--version", action="version", version=f"%(prog)s {__version__}",
     )
-    sub = parser.add_subparsers(dest="command")
-    sub.add_parser("update-models", help="Regenerate config.yaml from model definitions")
-
     parser.add_argument(
         "--host", default="127.0.0.1", help="Listen address (default: 127.0.0.1)",
     )
@@ -53,10 +37,6 @@ def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
 
-    if args.command == "update-models":
-        _update_models()
-        return
-
     # Store our flags as env vars (read by middleware/handler)
     if args.stateless:
         os.environ["CLAUDE_PROXY_STATELESS"] = "1"
@@ -66,15 +46,19 @@ def main() -> None:
     # Skip the remote model cost map fetch (adds seconds to startup)
     os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "true")
 
-    config_path = _config_path()
-    if not config_path.exists():
-        print("Config not found. Run: claude-proxy update-models", file=sys.stderr)  # noqa: T201
-        sys.exit(1)
+    # Generate config at startup from model definitions (always in sync)
+    from claude_proxy.models import generate_config
+
+    config_file = tempfile.NamedTemporaryFile(  # noqa: SIM115
+        mode="w", suffix=".yaml", prefix="claude-proxy-", delete=False,
+    )
+    config_file.write(generate_config())
+    config_file.close()
 
     # Build LiteLLM CLI args
     sys.argv = [
         "litellm",
-        "--config", str(config_path),
+        "--config", config_file.name,
         "--host", args.host,
         "--port", str(args.port),
     ]
@@ -97,6 +81,7 @@ def main() -> None:
     finally:
         sys.stdout.close()
         sys.stdout = _real_stdout
+        os.unlink(config_file.name)
 
 
 if __name__ == "__main__":

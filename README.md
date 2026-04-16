@@ -65,17 +65,13 @@ The `-high` and `-max` variants set the `--effort` flag. Higher effort enables e
 
 ### Updating models
 
-When new Claude models become available, edit `claude_proxy/models.py` and regenerate the config:
-
-```bash
-claude-proxy update-models
-```
-
-This regenerates the bundled `config.yaml` from the model definitions. Reinstall after updating:
+When new Claude models become available, edit `MODELS` or `EFFORTS` in `claude_proxy/models.py` and reinstall:
 
 ```bash
 uv cache clean claude-proxy && uv tool install --force --no-cache .
 ```
+
+The config is generated at startup from model definitions — no manual regeneration step.
 
 ## Usage
 

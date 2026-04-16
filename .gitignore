@@ -18,3 +18,4 @@ venv/
 .coverage
 htmlcov/
 claude_proxy/_version.py
+claude_proxy/config.yaml
