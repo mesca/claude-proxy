@@ -8,6 +8,24 @@ Built with [LiteLLM](https://github.com/BerriAI/litellm) and a custom backend th
 >
 > This project calls the documented Claude CLI using your own authenticated account. No API keys are intercepted, no authentication is bypassed, and no proprietary systems are reverse-engineered.
 
+<details>
+<summary><strong>Table of contents</strong></summary>
+
+- [Prerequisites](#prerequisites)
+- [Install](#install)
+- [Quick start](#quick-start)
+- [CLI reference](#cli-reference)
+- [Models](#models)
+- [Sessions](#sessions)
+- [Tools](#tools)
+- [System prompt](#system-prompt)
+- [API usage](#api-usage)
+- [OpenCode](#opencode)
+- [Architecture](#architecture)
+- [Development](#development)
+
+</details>
+
 ## Prerequisites
 
 - Python 3.13+
@@ -99,7 +117,7 @@ In stateless mode (`--stateless`), sessions are disabled and the full conversati
 
 ## Tools
 
-The proxy supports the OpenAI tool calling protocol. All tool execution happens on the **client side** (e.g. OpenCode) — the proxy does not execute tools.
+The proxy supports the OpenAI tool calling protocol. Neither the proxy nor Claude execute tools — all tool execution happens on the **client side** (e.g. OpenCode).
 
 When Claude responds with a `{"tool_calls": ...}` JSON object, the proxy rewrites it into a proper OpenAI `tool_calls` response with `finish_reason: "tool_calls"`. The client executes the tools and sends results back as `tool` role messages. No configuration required.
 
@@ -185,28 +203,33 @@ OpenCode sends Serena's tools to the proxy, Claude calls them via `tool_calls`, 
 
 ## Architecture
 
-```
-Client (OpenCode, curl, etc.)
-  │
-  │  OpenAI API (HTTP)
-  ▼
-┌──────────────────────────────┐
-│  claude-proxy                │
-│                              │
-│  ToolCallsMiddleware         │  ← rewrites {"tool_calls":...} to OpenAI format
-│  ReasoningContentMiddleware  │  ← flattens reasoning_content for SSE
-│  LiteLLM Proxy               │  ← routes models to custom handler
-│  ClaudeProxyHandler          │  ← extracts prompt, manages sessions
-│                              │
-│  claude CLI subprocess       │  ← claude -p "..." --resume <uuid>
-└──────────────────────────────┘
-  │
-  │  Anthropic API (via CLI auth)
-  ▼
-  Claude model
+```mermaid
+flowchart TB
+    Client["Client
+    (OpenCode, curl, ...)"]
+
+    subgraph Proxy["claude-proxy"]
+        MW1["ToolCallsMiddleware
+        rewrites tool_calls to OpenAI format"]
+        MW2["ReasoningContentMiddleware
+        flattens reasoning_content for SSE"]
+        LiteLLM["LiteLLM Proxy
+        routes models to custom handler"]
+        Handler["ClaudeProxyHandler
+        extracts prompt, manages sessions"]
+        CLI["claude CLI subprocess
+        claude -p ... --resume &lt;uuid&gt;"]
+
+        MW1 --> MW2 --> LiteLLM --> Handler --> CLI
+    end
+
+    Claude["Claude model"]
+
+    Client -- "OpenAI API (HTTP)" --> MW1
+    CLI -- "Anthropic API (via CLI auth)" --> Claude
 ```
 
-Every CLI call includes flags that sandbox Claude as a pure LLM:
+Claude is sandboxed as a pure LLM — all built-in tools, skills, and MCP servers are disabled:
 
 | Flag | Purpose |
 |---|---|
