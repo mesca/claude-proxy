@@ -54,12 +54,7 @@ class ToolCallsMiddleware:
             await self.app(scope, receive, send)
             return
 
-        # --- Request side: inject tool schemas into messages ---
-        request_body = await _read_request_body(receive)
-        modified_body = _inject_tool_schemas(request_body)
-        injected_receive = _make_receive(modified_body)
-
-        # --- Response side: buffer to detect tool_calls ---
+        # Buffer all response messages to detect tool_calls
         buffered: list[dict] = []
         headers_message: dict | None = None
 
@@ -70,7 +65,7 @@ class ToolCallsMiddleware:
             elif message["type"] == "http.response.body":
                 buffered.append(message)
 
-        await self.app(scope, injected_receive, buffering_send)
+        await self.app(scope, receive, buffering_send)
 
         # Accumulate all content from the buffered body chunks
         all_body = b"".join(m.get("body", b"") for m in buffered)
@@ -95,79 +90,6 @@ class ToolCallsMiddleware:
             for i, msg in enumerate(buffered):
                 msg = {**msg, "more_body": i < len(buffered) - 1}
                 await send(msg)
-
-
-# ---------------------------------------------------------------------------
-# Request-side: inject tool schemas into messages
-# ---------------------------------------------------------------------------
-
-
-async def _read_request_body(receive: Callable) -> bytes:
-    """Read the full request body from ASGI receive."""
-    body = b""
-    while True:
-        message = await receive()
-        body += message.get("body", b"")
-        if not message.get("more_body", False):
-            break
-    return body
-
-
-def _make_receive(body: bytes) -> Callable:
-    """Create an ASGI receive callable that returns the given body."""
-    sent = False
-
-    async def new_receive() -> dict:
-        nonlocal sent
-        if not sent:
-            sent = True
-            return {"type": "http.request", "body": body, "more_body": False}
-        return {"type": "http.disconnect"}
-
-    return new_receive
-
-
-def _inject_tool_schemas(body: bytes) -> bytes:
-    """Extract tools from request and inject their schemas into the system message.
-
-    LiteLLM strips `tools` before passing to custom handlers. By injecting
-    the schemas into messages here, the handler's --system-prompt will include
-    them so Claude knows exact parameter definitions.
-    """
-    try:
-        data = json.loads(body)
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        return body
-
-    tools = data.get("tools")
-    if not tools or not isinstance(tools, list):
-        return body
-
-    tool_text = "\n\nAvailable tools:\n"
-    for tool in tools:
-        if tool.get("type") != "function":
-            continue
-        fn = tool.get("function", {})
-        name = fn.get("name", "")
-        desc = fn.get("description", "")
-        params = fn.get("parameters", {})
-        tool_text += f"- {name}"
-        if desc:
-            tool_text += f": {desc}"
-        tool_text += "\n"
-        if params:
-            tool_text += f"  Parameters: {json.dumps(params)}\n"
-
-    messages = data.get("messages", [])
-    for msg in messages:
-        if msg.get("role") == "system":
-            content = msg.get("content") or ""
-            msg["content"] = content + tool_text
-            break
-    else:
-        messages.insert(0, {"role": "system", "content": tool_text.strip()})
-
-    return json.dumps(data).encode("utf-8")
 
 
 # ---------------------------------------------------------------------------
