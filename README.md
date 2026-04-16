@@ -116,17 +116,31 @@ For explicit control, pass `session_id` in the request body:
 
 The session ID is returned in the `system_fingerprint` field of every response.
 
+### Working directory
+
+By default, the Claude CLI runs in the directory where you started `claude-proxy`. Override it with an environment variable or per-request:
+
+```bash
+CLAUDE_PROXY_CWD=/path/to/project claude-proxy
+```
+
+```json
+{"model": "claude-sonnet-4-6", "messages": [...], "cwd": "/path/to/project"}
+```
+
 ## Tool support
 
-The proxy supports the OpenAI tool calling protocol. Clients send tool definitions, and when Claude responds with a `tool_calls` JSON object, the proxy rewrites it into a proper OpenAI `tool_calls` response with `finish_reason: "tool_calls"`. The client executes the tools and sends results back as `tool` role messages.
+The proxy supports the OpenAI tool calling protocol. All tool execution happens on the **client side** (e.g. OpenCode) — the proxy itself does not execute tools.
 
-This is handled transparently by ASGI middleware — no special configuration required.
+When Claude responds with a `{"tool_calls": ...}` JSON object, the proxy's ASGI middleware rewrites it into a proper OpenAI `tool_calls` response with `finish_reason: "tool_calls"`. The client executes the tools and sends results back as `tool` role messages. No special configuration required.
 
 ## System prompt
 
-The client's `system` message replaces Claude's default system prompt (`--system-prompt`). This gives Claude a clean slate: no built-in tool descriptions, no CLAUDE.md, no project context — only what the client sends.
+When the client sends a `system` message, it replaces Claude's default system prompt via `--system-prompt`. This gives Claude a clean slate: no built-in tool descriptions, no CLAUDE.md, no project context — only what the client sends.
 
-To keep Claude's default system prompt and append instead:
+When no `system` message is present, Claude uses its default system prompt (with `--tools ""` stripping built-in tool descriptions).
+
+To always keep Claude's default system prompt and append the client's message instead of replacing:
 
 ```bash
 claude-proxy --append-system-prompt
@@ -166,45 +180,20 @@ Add this to your `opencode.json` (project root or `~/.config/opencode/opencode.j
 
 ### With Serena MCP
 
-[Serena](https://github.com/oraios/serena) provides code intelligence tools (find symbols, read definitions, navigate references). To use Serena with OpenCode through the proxy, add a `mcp` section to your `opencode.json`:
+[Serena](https://github.com/oraios/serena) provides code intelligence tools (find symbols, read definitions, navigate references). Add a `mcp` section to your `opencode.json`:
 
 ```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "model": "claude-proxy/claude-sonnet-4-6",
-  "provider": {
-    "claude-proxy": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "Claude Proxy",
-      "options": {
-        "baseURL": "http://localhost:4000/v1",
-        "apiKey": "not-needed"
-      },
-      "models": {
-        "claude-opus-4-6": { "name": "Claude Opus 4.6" },
-        "claude-opus-4-6-high": { "name": "Claude Opus 4.6 (high effort)" },
-        "claude-opus-4-6-max": { "name": "Claude Opus 4.6 (max effort)" },
-        "claude-sonnet-4-6": { "name": "Claude Sonnet 4.6" },
-        "claude-sonnet-4-6-high": { "name": "Claude Sonnet 4.6 (high effort)" },
-        "claude-sonnet-4-6-max": { "name": "Claude Sonnet 4.6 (max effort)" },
-        "claude-haiku-4-5": { "name": "Claude Haiku 4.5" },
-        "claude-haiku-4-5-high": { "name": "Claude Haiku 4.5 (high effort)" },
-        "claude-haiku-4-5-max": { "name": "Claude Haiku 4.5 (max effort)" }
-      }
-    }
-  },
   "mcp": {
     "serena": {
       "type": "local",
       "command": ["uvx", "--from", "serena-agent", "serena", "start-mcp-server", "--project-from-cwd"]
     }
   }
-}
 ```
 
-The `--project-from-cwd` flag auto-detects the project from the working directory. OpenCode sends Serena's tools to the proxy, Claude calls them, and OpenCode executes them locally via Serena.
+OpenCode sends Serena's tools to the proxy, Claude calls them via `tool_calls`, and OpenCode executes them locally via Serena.
 
-**Test prompt**: `Find the definition of the main function and list all symbols in the entry point file.`
+**Test prompt**: `Show me the body of the main function and list all symbols in the entry point file.`
 
 ## CLI flags
 
