@@ -44,7 +44,14 @@ def _content_to_text(content: str | list[dict[str, Any]] | None) -> str:
 
 
 def _extract_prompt(messages: list[dict[str, Any]]) -> str:
-    """Extract the last user message content from the message array."""
+    """Extract the prompt to send to Claude.
+
+    If the last messages are tool results, format them as the prompt
+    (with optional trailing user message). Otherwise return the last
+    user message.
+    """
+    if _is_tool_result_turn(messages):
+        return _format_tool_results(messages)
     for msg in reversed(messages):
         if msg.get("role") == "user":
             return _content_to_text(msg.get("content", ""))
