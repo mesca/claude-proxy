@@ -22,6 +22,7 @@ tools_var: contextvars.ContextVar[list[dict[str, Any]] | None] = contextvars.Con
     "tools", default=None,
 )
 
+
 # Fixed namespace for deterministic UUID5 derivation.
 _SESSION_NAMESPACE = uuid.UUID("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
 
@@ -81,11 +82,11 @@ class ToolCallsMiddleware:
             await self.app(scope, receive, send)
             return
 
-        # Set session ID from client header
-        _detect_session(scope)
-
-        # Extract tools from request body (read-only, then replay)
+        # Extract tools and model from request body (read-only, then replay)
         receive = await _extract_tools_from_request(receive)
+
+        # Set session ID from client header + model (must run after body extraction)
+        _detect_session(scope)
 
         # Buffer all response messages
         buffered: list[dict] = []
@@ -147,7 +148,7 @@ async def _extract_tools_from_request(receive: Callable) -> Callable:
         if not message.get("more_body", False):
             break
 
-    # Extract tools
+    # Extract tools and model from request body
     try:
         data = json.loads(b"".join(body_chunks))
         tools = data.get("tools")
