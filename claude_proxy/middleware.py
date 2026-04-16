@@ -1,11 +1,32 @@
-"""ASGI middleware for SSE streaming and tool_calls transformation."""
+"""ASGI middleware for SSE streaming, tool_calls, and session management."""
 
 from __future__ import annotations
 
+import contextvars
 import json
+import os
 import uuid
 from collections.abc import Callable
 from typing import Any
+
+from claude_proxy.log import logger
+
+# Session ID derived from client header, read by the handler.
+session_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "session_id", default=None,
+)
+
+# Fixed namespace for deterministic UUID5 derivation.
+_SESSION_NAMESPACE = uuid.UUID("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
+
+# Well-known session headers, checked in order.
+_WELL_KNOWN_HEADERS = [
+    b"x-session-affinity",   # OpenCode
+    b"x-session-id",         # LiteLLM, common convention
+    b"x-conversation-id",    # Common convention
+]
+
+_warned_no_header = False
 
 
 class ReasoningContentMiddleware:
@@ -54,6 +75,9 @@ class ToolCallsMiddleware:
             await self.app(scope, receive, send)
             return
 
+        # Set session ID from client header
+        _detect_session(scope)
+
         # Buffer all response messages
         buffered: list[dict] = []
         headers_message: dict | None = None
@@ -90,6 +114,44 @@ class ToolCallsMiddleware:
             for i, msg in enumerate(buffered):
                 msg = {**msg, "more_body": i < len(buffered) - 1}
                 await send(msg)
+
+
+# ---------------------------------------------------------------------------
+# Session detection
+# ---------------------------------------------------------------------------
+
+
+def _detect_session(scope: dict) -> None:
+    """Find a session header in the request and set the context var."""
+    global _warned_no_header  # noqa: PLW0603
+
+    if os.environ.get("CLAUDE_PROXY_STATELESS") == "1":
+        return
+
+    headers = dict(scope.get("headers") or [])
+
+    # Check explicit override first
+    custom = os.environ.get("CLAUDE_PROXY_SESSION_HEADER")
+    if custom:
+        value = headers.get(custom.lower().encode(), b"").decode()
+        if value:
+            session_var.set(str(uuid.uuid5(_SESSION_NAMESPACE, value)))
+            return
+
+    # Auto-discover from well-known headers
+    for header in _WELL_KNOWN_HEADERS:
+        value = headers.get(header, b"").decode()
+        if value:
+            session_var.set(str(uuid.uuid5(_SESSION_NAMESPACE, value)))
+            return
+
+    # No header found
+    if not _warned_no_header:
+        _warned_no_header = True
+        logger.warning(
+            "No session header found in request. Running stateless. "
+            "Set --session-header to specify one, or use --stateless to suppress this warning.",
+        )
 
 
 # ---------------------------------------------------------------------------

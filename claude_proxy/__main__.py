@@ -24,6 +24,18 @@ def main() -> None:
         update_models()
         return
 
+    # --stateless: disable session management
+    if "--stateless" in sys.argv:
+        os.environ["CLAUDE_PROXY_STATELESS"] = "1"
+        sys.argv.remove("--stateless")
+
+    # --session-header <name>: override session header auto-discovery
+    if "--session-header" in sys.argv:
+        idx = sys.argv.index("--session-header")
+        if idx + 1 < len(sys.argv):
+            os.environ["CLAUDE_PROXY_SESSION_HEADER"] = sys.argv[idx + 1]
+            sys.argv = sys.argv[:idx] + sys.argv[idx + 2:]
+
     # Skip the remote model cost map fetch (adds seconds to startup)
     os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "true")
 

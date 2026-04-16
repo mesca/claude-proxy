@@ -101,6 +101,29 @@ curl http://localhost:4000/v1/chat/completions \
   }'
 ```
 
+## Sessions
+
+The proxy auto-discovers a session header from each request to maintain Claude CLI sessions via `--resume`. This provides conversation continuity and prompt caching (90% cost savings on cached turns).
+
+Well-known headers checked (in order): `x-session-affinity` (OpenCode), `x-session-id`, `x-conversation-id`. A deterministic UUID is derived from the header value — no server-side state, survives proxy restarts.
+
+Override header auto-discovery:
+
+```bash
+claude-proxy --session-header x-my-custom-header
+```
+
+Disable sessions entirely (each request is independent):
+
+```bash
+claude-proxy --stateless
+```
+
+| Mode | Prompt caching | Context | Concurrency |
+|---|---|---|---|
+| Session (default) | 90% savings on history | Full — Claude remembers previous turns | Per-header — concurrent sessions work |
+| Stateless | System prompt only | Last message only | Unlimited |
+
 ## Tool support
 
 The proxy supports the OpenAI tool calling protocol. All tool execution happens on the **client side** (e.g. OpenCode) — the proxy itself does not execute tools.

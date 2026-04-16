@@ -26,6 +26,7 @@ from litellm.types.utils import (
 from claude_proxy import cli
 from claude_proxy.cli import ClaudeCliError
 from claude_proxy.log import logger
+from claude_proxy.middleware import session_var
 from claude_proxy.models import parse_model_string
 
 # ---------------------------------------------------------------------------
@@ -75,6 +76,61 @@ def _extract_system_prompt(messages: list[dict[str, Any]]) -> str:
 
 def _get_model_and_effort(model: str) -> tuple[str | None, str | None]:
     return parse_model_string(model)
+
+
+def _get_session_id() -> str | None:
+    """Read session ID from context var (set by middleware)."""
+    return session_var.get()
+
+
+def _run_with_session(
+    prompt: str,
+    *,
+    model: str | None = None,
+    effort: str | None = None,
+    system_prompt: str | None = None,
+    timeout: float | None = None,
+) -> dict[str, Any]:
+    """Run CLI with --resume, retrying with --session-id on session-not-found."""
+    sid = _get_session_id()
+    try:
+        return cli.run_sync(
+            prompt, session_id=sid, model=model, effort=effort,
+            system_prompt=system_prompt, timeout=timeout,
+        )
+    except ClaudeCliError as e:
+        if sid and "session" in e.message.lower():
+            logger.info("Session {sid} not found, creating new", sid=sid)
+            return cli.run_sync(
+                prompt, session_id=sid, model=model, effort=effort,
+                system_prompt=system_prompt, timeout=timeout, create_session=True,
+            )
+        raise
+
+
+async def _run_with_session_async(
+    prompt: str,
+    *,
+    model: str | None = None,
+    effort: str | None = None,
+    system_prompt: str | None = None,
+    timeout: float | None = None,
+) -> dict[str, Any]:
+    """Async version of _run_with_session."""
+    sid = _get_session_id()
+    try:
+        return await cli.run_async(
+            prompt, session_id=sid, model=model, effort=effort,
+            system_prompt=system_prompt, timeout=timeout,
+        )
+    except ClaudeCliError as e:
+        if sid and "session" in e.message.lower():
+            logger.info("Session {sid} not found, creating new", sid=sid)
+            return await cli.run_async(
+                prompt, session_id=sid, model=model, effort=effort,
+                system_prompt=system_prompt, timeout=timeout, create_session=True,
+            )
+        raise
 
 
 def _get_tools(kwargs: dict[str, Any]) -> list[dict[str, Any]] | None:
@@ -400,7 +456,7 @@ class ClaudeProxyHandler(CustomLLM):
         else:
             prompt = _extract_prompt(messages)
 
-        result = cli.run_sync(
+        result = _run_with_session(
             prompt, model=model_name, effort=effort,
             system_prompt=system_prompt,
         )
@@ -424,7 +480,7 @@ class ClaudeProxyHandler(CustomLLM):
         else:
             prompt = _extract_prompt(messages)
 
-        result = await cli.run_async(
+        result = await _run_with_session_async(
             prompt, model=model_name, effort=effort,
             system_prompt=system_prompt,
         )
@@ -454,8 +510,9 @@ class ClaudeProxyHandler(CustomLLM):
         accumulated_text = ""
         buffered_chunks: list[GenericStreamingChunk] = []
 
+        sid = _get_session_id()
         for event in cli.stream_sync(
-            prompt, model=model_name, effort=effort,
+            prompt, session_id=sid, model=model_name, effort=effort,
             system_prompt=system_prompt,
         ):
 
@@ -497,8 +554,9 @@ class ClaudeProxyHandler(CustomLLM):
         accumulated_text = ""
         buffered_chunks: list[GenericStreamingChunk] = []
 
+        sid = _get_session_id()
         async for event in cli.stream_async(
-            prompt, model=model_name, effort=effort,
+            prompt, session_id=sid, model=model_name, effort=effort,
             system_prompt=system_prompt,
         ):
 
@@ -528,7 +586,7 @@ class ClaudeProxyHandler(CustomLLM):
         system_prompt = _extract_system_prompt(messages)
         model_name, effort = _get_model_and_effort(model)
 
-        result = cli.run_sync(
+        result = _run_with_session(
             prompt, model=model_name, effort=effort,
             system_prompt=system_prompt,
         )
@@ -540,7 +598,7 @@ class ClaudeProxyHandler(CustomLLM):
         system_prompt = _extract_system_prompt(messages)
         model_name, effort = _get_model_and_effort(model)
 
-        result = await cli.run_async(
+        result = await _run_with_session_async(
             prompt, model=model_name, effort=effort,
             system_prompt=system_prompt,
         )
@@ -555,8 +613,9 @@ class ClaudeProxyHandler(CustomLLM):
         accumulated_text = ""
         buffered_chunks: list[GenericStreamingChunk] = []
 
+        sid = _get_session_id()
         for event in cli.stream_sync(
-            prompt, model=model_name, effort=effort,
+            prompt, session_id=sid, model=model_name, effort=effort,
             system_prompt=system_prompt,
         ):
 
@@ -587,8 +646,9 @@ class ClaudeProxyHandler(CustomLLM):
         accumulated_text = ""
         buffered_chunks: list[GenericStreamingChunk] = []
 
+        sid = _get_session_id()
         async for event in cli.stream_async(
-            prompt, model=model_name, effort=effort,
+            prompt, session_id=sid, model=model_name, effort=effort,
             system_prompt=system_prompt,
         ):
 

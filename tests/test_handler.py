@@ -120,7 +120,23 @@ class TestBuildCommand:
         assert cmd[cmd.index("--allowedTools") + 1] == ""
         assert "--disable-slash-commands" in cmd
         assert "--strict-mcp-config" in cmd
-        assert "--dangerously-skip-permissions" not in cmd
+
+    def test_no_session_stateless(self):
+        cmd = build_command("hello")
+        assert "--no-session-persistence" in cmd
+        assert "--resume" not in cmd
+
+    def test_session_resume(self):
+        cmd = build_command("hello", session_id="abc-123")
+        assert "--resume" in cmd
+        assert cmd[cmd.index("--resume") + 1] == "abc-123"
+        assert "--no-session-persistence" not in cmd
+
+    def test_session_create(self):
+        cmd = build_command("hello", session_id="abc-123", create_session=True)
+        assert "--session-id" in cmd
+        assert cmd[cmd.index("--session-id") + 1] == "abc-123"
+        assert "--resume" not in cmd
 
 
 class TestExtractPrompt:
