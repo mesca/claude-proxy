@@ -59,6 +59,7 @@ def _extract_prompt(messages: list[dict[str, Any]]) -> str:
 _TOOL_FORMAT_INSTRUCTIONS = (
     "\n\nWhen you want to use a tool, respond with ONLY a "
     'JSON object: {"tool_calls": [{"id": "<id>", "name": "<tool>", "arguments": {...}}]}\n'
+    "Include ALL required parameters in arguments exactly as defined in the tool schema.\n"
     "When you want to respond with text, just respond normally without JSON."
 )
 
