@@ -127,7 +127,7 @@ class TestBuildCommand:
         assert cmd[cmd.index("--allowedTools") + 1] == ""
         assert "--disable-slash-commands" in cmd
         assert "--strict-mcp-config" in cmd
-        assert "--dangerously-skip-permissions" in cmd
+        assert "--dangerously-skip-permissions" not in cmd
 
 
 class TestExtractPrompt:

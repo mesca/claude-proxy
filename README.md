@@ -295,7 +295,6 @@ Every request to the Claude CLI includes these flags:
 | `--allowedTools ""`               | Block execution of any remaining tools           |
 | `--disable-slash-commands`        | Disable all skills                               |
 | `--strict-mcp-config`            | Disable all MCP servers                           |
-| `--dangerously-skip-permissions` | Skip permission prompts                           |
 
 Claude acts as a pure LLM — all tool use (file reading, editing, shell commands) is handled by the client (e.g. OpenCode).
 

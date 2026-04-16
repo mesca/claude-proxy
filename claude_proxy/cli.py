@@ -34,7 +34,6 @@ def build_command(
         "",
         "--disable-slash-commands",
         "--strict-mcp-config",
-        "--dangerously-skip-permissions",
     ]
 
     if system_prompt:
