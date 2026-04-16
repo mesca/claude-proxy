@@ -1,8 +1,8 @@
 # claude-proxy
 
-OpenAI-compatible LLM proxy that routes requests to the Claude CLI.
+OpenAI-compatible proxy that routes requests to the Claude CLI.
 
-Built with [LiteLLM](https://github.com/BerriAI/litellm) and a custom backend that calls `claude -p` as a subprocess.
+Built with [LiteLLM](https://github.com/BerriAI/litellm) and a custom backend that calls `claude -p` as a subprocess. Claude acts as a pure LLM — all tool execution is handled by the client.
 
 > **Disclaimer** — Use at your own risk. The authors make no claims regarding compliance with Anthropic's [Terms of Service](https://www.anthropic.com/legal/consumer-terms) or [Acceptable Use Policy](https://www.anthropic.com/legal/aup). It is your responsibility to review and comply with these policies, which may change at any time.
 >
@@ -12,7 +12,7 @@ Built with [LiteLLM](https://github.com/BerriAI/litellm) and a custom backend th
 
 - Python 3.13+
 - [uv](https://docs.astral.sh/uv/)
-- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated (`claude` command available in your PATH)
+- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) installed and authenticated
 
 ## Install
 
@@ -24,15 +24,8 @@ uv tool install ./claude-proxy
 To update after pulling new changes:
 
 ```bash
-cd claude-proxy
-git pull
+cd claude-proxy && git pull
 uv cache clean claude-proxy && uv tool install --force --no-cache .
-```
-
-Verify the installation:
-
-```bash
-claude-proxy --help
 ```
 
 ## Quick start
@@ -41,39 +34,68 @@ claude-proxy --help
 claude-proxy
 ```
 
-The proxy starts on `http://localhost:4000`. All LiteLLM flags work (e.g. `claude-proxy --port 8080`).
+The proxy starts on `http://127.0.0.1:4000`.
 
-Run in the background with tmux (detach/reattach):
+Run in the background with tmux:
 
 ```bash
-tmux new -d -s proxy 'claude-proxy'   # start in background
-tmux attach -t proxy                   # see logs (Ctrl+B D to detach)
+tmux new -d -s proxy 'claude-proxy'   # start
+tmux attach -t proxy                   # logs (Ctrl+B D to detach)
 tmux kill-session -t proxy             # stop
 ```
 
-## Available models
+## CLI reference
 
-| Model name                   | Claude CLI flags                     |
-|------------------------------|--------------------------------------|
-| `claude-opus-4-6`            | `--model opus`                       |
-| `claude-opus-4-6-high`       | `--model opus --effort high`         |
-| `claude-opus-4-6-max`        | `--model opus --effort max`          |
-| `claude-sonnet-4-6`          | `--model sonnet`                     |
-| `claude-sonnet-4-6-high`     | `--model sonnet --effort high`       |
-| `claude-sonnet-4-6-max`      | `--model sonnet --effort max`        |
-| `claude-haiku-4-5`           | `--model haiku`                      |
-| `claude-haiku-4-5-high`      | `--model haiku --effort high`        |
-| `claude-haiku-4-5-max`       | `--model haiku --effort max`         |
+```
+claude-proxy [options] [command]
+```
 
-The `-high` and `-max` variants set the `--effort` flag. Higher effort enables extended thinking — thinking content is sent as `reasoning_content` in SSE chunks.
+### Options
 
-### Adding models
+| Flag | Default | Description |
+|---|---|---|
+| `--host HOST` | `127.0.0.1` | Listen address |
+| `--port PORT` | `4000` | Listen port |
+| `--session-header HEADER` | auto-discover | HTTP header used for session affinity (see [Sessions](#sessions)) |
+| `--stateless` | off | Disable sessions — full conversation history sent each turn |
+| `-v, --version` | | Show version and exit |
+| `-h, --help` | | Show help and exit |
 
-Show current models:
+### Commands
+
+| Command | Description |
+|---|---|
+| `list-models` | Show available models with their Claude CLI flags |
+
+### Examples
 
 ```bash
-claude-proxy list-models
+claude-proxy                                # default: 127.0.0.1:4000
+claude-proxy --port 8080                    # custom port
+claude-proxy --host 0.0.0.0 --port 8080    # listen on all interfaces
+claude-proxy --stateless                    # no sessions
+claude-proxy --session-header x-session-id  # custom session header
+claude-proxy list-models                    # show models
+claude-proxy --version                      # show version
 ```
+
+## Models
+
+| Model name | Claude CLI flags |
+|---|---|
+| `claude-opus-4-6` | `--model opus` |
+| `claude-opus-4-6-high` | `--model opus --effort high` |
+| `claude-opus-4-6-max` | `--model opus --effort max` |
+| `claude-sonnet-4-6` | `--model sonnet` |
+| `claude-sonnet-4-6-high` | `--model sonnet --effort high` |
+| `claude-sonnet-4-6-max` | `--model sonnet --effort max` |
+| `claude-haiku-4-5` | `--model haiku` |
+| `claude-haiku-4-5-high` | `--model haiku --effort high` |
+| `claude-haiku-4-5-max` | `--model haiku --effort max` |
+
+The `-high` and `-max` variants set the `--effort` flag, enabling extended thinking. Thinking content is sent as `reasoning_content` in SSE chunks.
+
+### Adding models
 
 When new Claude models become available, edit `MODELS` in `claude_proxy/models.py`:
 
@@ -82,19 +104,45 @@ MODELS = [
     {"alias": "opus", "name": "claude-opus-4-6"},
     {"alias": "sonnet", "name": "claude-sonnet-4-6"},
     {"alias": "haiku", "name": "claude-haiku-4-5"},
-    # {"alias": "new-model", "name": "claude-new-model-x-y"},
 ]
 ```
 
-The `alias` is the CLI `--model` value. The `name` is the public model ID exposed to clients. Effort variants (`-high`, `-max`) are generated automatically. Reinstall and restart after editing:
-
-```bash
-uv cache clean claude-proxy && uv tool install --force --no-cache .
-```
+The `alias` is the CLI `--model` value. The `name` is the model ID exposed to clients. Effort variants are generated automatically. Reinstall after editing.
 
 Reference: [Anthropic model IDs](https://docs.anthropic.com/en/docs/about-claude/models)
 
-## Usage
+## Sessions
+
+The proxy maintains Claude CLI sessions across requests for conversation continuity and prompt caching (up to 90% cost savings on cached turns).
+
+**How it works**: the proxy looks for a session header in each request, derives a deterministic UUID from its value, and uses `--resume` to continue the CLI session. No server-side state — the CLI persists sessions to disk. Survives proxy restarts.
+
+Well-known headers checked in order:
+
+| Header | Used by |
+|---|---|
+| `x-session-affinity` | OpenCode |
+| `x-session-id` | Common convention |
+| `x-conversation-id` | Common convention |
+
+If no session header is found, the proxy falls back to stateless mode (with a warning).
+
+| Mode | Prompt caching | Context | Concurrency |
+|---|---|---|---|
+| Session (default) | 90% savings on history | Full — Claude remembers via `--resume` | Per-header — concurrent sessions work |
+| Stateless | System prompt only | Full — entire conversation sent each turn | Unlimited |
+
+## Tools
+
+The proxy supports the OpenAI tool calling protocol. All tool execution happens on the **client side** (e.g. OpenCode).
+
+When Claude responds with a `{"tool_calls": ...}` JSON object, the proxy rewrites it into a proper OpenAI `tool_calls` response with `finish_reason: "tool_calls"`. The client executes the tools and sends results back as `tool` role messages. No configuration required.
+
+## System prompt
+
+The client's `system` message replaces Claude's default system prompt via `--system-prompt`. This gives Claude a clean slate: no built-in tool descriptions, no CLAUDE.md, no project context — only what the client sends. When no `system` message is present, a generic fallback is used.
+
+## API examples
 
 ### Non-streaming
 
@@ -119,40 +167,7 @@ curl http://localhost:4000/v1/chat/completions \
   }'
 ```
 
-## Sessions
-
-The proxy auto-discovers a session header from each request to maintain Claude CLI sessions via `--resume`. This provides conversation continuity and prompt caching (90% cost savings on cached turns).
-
-Well-known headers checked (in order): `x-session-affinity` (OpenCode), `x-session-id`, `x-conversation-id`. A deterministic UUID is derived from the header value — no server-side state, survives proxy restarts.
-
-Override header auto-discovery:
-
-```bash
-claude-proxy --session-header x-my-custom-header
-```
-
-Disable sessions entirely (each request is independent):
-
-```bash
-claude-proxy --stateless
-```
-
-| Mode | Prompt caching | Context | Concurrency |
-|---|---|---|---|
-| Session (default) | 90% savings on history | Full — Claude remembers via `--resume` | Per-header — concurrent sessions work |
-| Stateless | System prompt only | Full — entire conversation sent each turn | Unlimited |
-
-## Tool support
-
-The proxy supports the OpenAI tool calling protocol. All tool execution happens on the **client side** (e.g. OpenCode) — the proxy itself does not execute tools.
-
-When Claude responds with a `{"tool_calls": ...}` JSON object, the proxy's ASGI middleware rewrites it into a proper OpenAI `tool_calls` response with `finish_reason: "tool_calls"`. The client executes the tools and sends results back as `tool` role messages. No special configuration required.
-
-## System prompt
-
-The client's `system` message replaces Claude's default system prompt via `--system-prompt`. This gives Claude a clean slate: no built-in tool descriptions, no CLAUDE.md, no project context — only what the client sends. When no `system` message is present, a generic fallback is used.
-
-## OpenCode configuration
+## OpenCode
 
 Add this to your `opencode.json` (project root or `~/.config/opencode/opencode.json`):
 
@@ -201,18 +216,17 @@ OpenCode sends Serena's tools to the proxy, Claude calls them via `tool_calls`, 
 
 **Test prompt**: `Show me the body of the main function and list all symbols in the entry point file.`
 
-## CLI flags
+## Internals
 
 Every request to the Claude CLI includes these flags:
 
-| Flag                       | Purpose                                       |
-|----------------------------|-----------------------------------------------|
-| `--tools ""`               | Remove built-in tool descriptions from prompt |
-| `--allowedTools ""`        | Block execution of any remaining tools        |
-| `--disable-slash-commands` | Disable all skills                            |
-| `--strict-mcp-config`     | Disable all MCP servers                        |
-
-Claude acts as a pure LLM — all tool use is handled by the client.
+| Flag | Purpose |
+|---|---|
+| `--tools ""` | Remove built-in tool descriptions from prompt |
+| `--allowedTools ""` | Block execution of any remaining tools |
+| `--disable-slash-commands` | Disable all skills |
+| `--strict-mcp-config` | Disable all MCP servers |
+| `--system-prompt` | Replace default system prompt with client's |
 
 ## Development
 
