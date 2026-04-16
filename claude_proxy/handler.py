@@ -322,8 +322,7 @@ def _format_tool_results(messages: list[dict[str, Any]]) -> str:
             break  # stop at assistant or system
 
     parts.reverse()
-    results = "\n".join(parts)
-    prompt = f"Here are the results of the tools you called:\n\n{results}"
+    prompt = "\n".join(parts)
     if trailing_user:
         prompt += f"\n\n{trailing_user}"
     return prompt
