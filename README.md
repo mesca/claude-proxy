@@ -33,10 +33,7 @@ claude-proxy --help
 
 ## Quick start
 
-Start the proxy from your project directory:
-
 ```bash
-cd /path/to/your/project
 claude-proxy
 ```
 
@@ -98,7 +95,7 @@ curl http://localhost:4000/v1/chat/completions \
 curl http://localhost:4000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "claude-sonnet-4-6:thinking",
+    "model": "claude-sonnet-4-6-max",
     "messages": [{"role": "user", "content": "What is 99*101?"}],
     "stream": true
   }'
@@ -119,23 +116,20 @@ For explicit control, pass `session_id` in the request body:
 
 The session ID is returned in the `system_fingerprint` field of every response.
 
-### Working directory
+## Tool support
 
-The Claude CLI runs in the directory where you started `claude-proxy`. This determines the project context Claude sees.
+The proxy supports the OpenAI tool calling protocol. Clients send tool definitions, and when Claude responds with a `tool_calls` JSON object, the proxy rewrites it into a proper OpenAI `tool_calls` response with `finish_reason: "tool_calls"`. The client executes the tools and sends results back as `tool` role messages.
+
+This is handled transparently by ASGI middleware — no special configuration required.
+
+## System prompt
+
+The client's `system` message replaces Claude's default system prompt (`--system-prompt`). This gives Claude a clean slate: no built-in tool descriptions, no CLAUDE.md, no project context — only what the client sends.
+
+To keep Claude's default system prompt and append instead:
 
 ```bash
-cd /path/to/your/project
-claude-proxy
-```
-
-Alternatively, set it via environment variable or per-request:
-
-```bash
-CLAUDE_PROXY_CWD=/path/to/project claude-proxy
-```
-
-```json
-{"model": "claude-sonnet-4-6", "messages": [...], "cwd": "/path/to/project"}
+claude-proxy --append-system-prompt
 ```
 
 ## OpenCode configuration
@@ -208,95 +202,22 @@ Add this to your `opencode.json` (project root or `~/.config/opencode/opencode.j
 }
 ```
 
-The `--project-from-cwd` flag auto-detects the project from the working directory. Start the proxy from your project directory and use OpenCode as usual. OpenCode sends Serena's tools to the proxy, Claude calls them, and OpenCode executes them locally via Serena.
+The `--project-from-cwd` flag auto-detects the project from the working directory. OpenCode sends Serena's tools to the proxy, Claude calls them, and OpenCode executes them locally via Serena.
 
-**Test prompt**: Try asking OpenCode: `Find the definition of the main function and list all symbols in the entry point file.`
-
-## Tool support
-
-The proxy supports the OpenAI tool calling protocol. Clients send tool definitions in the `tools` field, and Claude responds with `tool_calls` when it wants to use a tool. The client executes the tool and sends results back.
-
-### How it works
-
-1. Client sends `tools` in the request — the proxy injects tool definitions into Claude's system prompt
-2. Claude responds with a JSON `tool_calls` object — the proxy parses it and returns an OpenAI-format `tool_calls` response with `finish_reason: "tool_calls"`
-3. Client executes the tools and sends results as `tool` role messages — the proxy formats them in XML tags and resumes the session
-4. Claude continues with a text response (or more tool calls)
-
-### Example: tool call request
-
-```bash
-curl http://localhost:4000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "claude-sonnet-4-6",
-    "messages": [{"role": "user", "content": "Read the file hello.py"}],
-    "tools": [{
-      "type": "function",
-      "function": {
-        "name": "read_file",
-        "description": "Read a file from disk",
-        "parameters": {
-          "type": "object",
-          "properties": {"path": {"type": "string"}},
-          "required": ["path"]
-        }
-      }
-    }]
-  }'
-```
-
-### Example: sending tool results
-
-```bash
-curl http://localhost:4000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "claude-sonnet-4-6",
-    "messages": [
-      {"role": "user", "content": "Read hello.py"},
-      {"role": "assistant", "content": null, "tool_calls": [
-        {"id": "call_1", "type": "function", "function": {"name": "read_file", "arguments": "{\"path\":\"hello.py\"}"}}
-      ]},
-      {"role": "tool", "tool_call_id": "call_1", "name": "read_file", "content": "print(\"hello world\")"}
-    ],
-    "tools": [{
-      "type": "function",
-      "function": {
-        "name": "read_file",
-        "description": "Read a file from disk",
-        "parameters": {
-          "type": "object",
-          "properties": {"path": {"type": "string"}},
-          "required": ["path"]
-        }
-      }
-    }]
-  }'
-```
-
-### System prompt passthrough
-
-The client's `system` message is passed to Claude via `--system-prompt`, replacing the default system prompt. This gives Claude a clean slate: no built-in tool descriptions, no CLAUDE.md, no project context — only what the client sends.
-
-To keep Claude's default system prompt and append instead:
-
-```bash
-claude-proxy --append-system-prompt
-```
+**Test prompt**: `Find the definition of the main function and list all symbols in the entry point file.`
 
 ## CLI flags
 
 Every request to the Claude CLI includes these flags:
 
-| Flag                              | Purpose                                         |
-|-----------------------------------|--------------------------------------------------|
-| `--tools ""`                      | Remove built-in tool descriptions from prompt    |
-| `--allowedTools ""`               | Block execution of any remaining tools           |
-| `--disable-slash-commands`        | Disable all skills                               |
-| `--strict-mcp-config`            | Disable all MCP servers                           |
+| Flag                       | Purpose                                       |
+|----------------------------|-----------------------------------------------|
+| `--tools ""`               | Remove built-in tool descriptions from prompt |
+| `--allowedTools ""`        | Block execution of any remaining tools        |
+| `--disable-slash-commands` | Disable all skills                            |
+| `--strict-mcp-config`     | Disable all MCP servers                        |
 
-Claude acts as a pure LLM — all tool use (file reading, editing, shell commands) is handled by the client (e.g. OpenCode).
+Claude acts as a pure LLM — all tool use is handled by the client.
 
 ## Development
 
