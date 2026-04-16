@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import json
 import os
@@ -155,11 +156,17 @@ async def _extract_tools_from_request(receive: Callable) -> Callable:
     except (json.JSONDecodeError, UnicodeDecodeError):
         pass
 
-    # Replay: return a receive that yields the buffered messages
+    # Replay: return a receive that yields the buffered messages,
+    # then block forever (the app may call receive again to wait for disconnect)
     replay_iter = iter(messages)
+    done = asyncio.Event()
 
     async def replay_receive() -> dict:
-        return next(replay_iter, {"type": "http.disconnect"})
+        msg = next(replay_iter, None)
+        if msg is not None:
+            return msg
+        await done.wait()  # block — don't signal disconnect
+        return {"type": "http.disconnect"}
 
     return replay_receive
 
