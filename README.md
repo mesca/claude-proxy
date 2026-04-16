@@ -4,6 +4,10 @@ OpenAI-compatible LLM proxy that routes requests to the Claude CLI.
 
 Built with [LiteLLM](https://github.com/BerriAI/litellm) and a custom backend that calls `claude -p` as a subprocess.
 
+> **Disclaimer** — Use at your own risk. The authors make no claims regarding compliance with Anthropic's [Terms of Service](https://www.anthropic.com/legal/consumer-terms) or [Acceptable Use Policy](https://www.anthropic.com/legal/aup). It is your responsibility to review and comply with these policies, which may change at any time.
+>
+> This project calls the documented Claude CLI using your own authenticated account. No API keys are intercepted, no authentication is bypassed, and no proprietary systems are reverse-engineered.
+
 ## Prerequisites
 
 - Python 3.13+
