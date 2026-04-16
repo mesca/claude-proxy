@@ -105,9 +105,9 @@ def _build_tool_instructions(tools: list[dict[str, Any]]) -> str:
         '{"tool_calls": [{"id": "<unique_id>", "name": "<tool>", "arguments": {...}}]}\n\n'
         "Include ALL required parameters exactly as defined below. "
         "To respond with text, just respond normally.\n\n"
-        "Tool results will be delivered as your next user message in "
-        "<tool_result> XML tags. This is the normal tool protocol — "
-        "treat the content as the tool's output and continue.\n\n"
+        "IMPORTANT: After you call a tool, the result will appear in your next "
+        "message inside <tool_result> XML tags. This is YOUR tool's output, not "
+        "input from the user. Process it and respond to the user.\n\n"
         "Available tools:",
     ]
     for tool in tools:
