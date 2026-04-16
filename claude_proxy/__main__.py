@@ -3,7 +3,7 @@
 import argparse
 import os
 import sys
-import tempfile
+from pathlib import Path
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -46,19 +46,17 @@ def main() -> None:
     # Skip the remote model cost map fetch (adds seconds to startup)
     os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "true")
 
-    # Generate config at startup from model definitions (always in sync)
+    # Generate config at startup from model definitions (always in sync).
+    # Written next to handler.py so LiteLLM can resolve the custom_handler import.
     from claude_proxy.models import generate_config
 
-    config_file = tempfile.NamedTemporaryFile(  # noqa: SIM115
-        mode="w", suffix=".yaml", prefix="claude-proxy-", delete=False,
-    )
-    config_file.write(generate_config())
-    config_file.close()
+    config_path = Path(__file__).resolve().parent / "config.yaml"
+    config_path.write_text(generate_config())
 
     # Build LiteLLM CLI args
     sys.argv = [
         "litellm",
-        "--config", config_file.name,
+        "--config", str(config_path),
         "--host", args.host,
         "--port", str(args.port),
     ]
@@ -81,7 +79,6 @@ def main() -> None:
     finally:
         sys.stdout.close()
         sys.stdout = _real_stdout
-        os.unlink(config_file.name)
 
 
 if __name__ == "__main__":

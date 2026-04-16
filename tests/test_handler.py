@@ -215,7 +215,7 @@ class TestGenerateConfig:
         assert "model_list:" in config
         assert "claude-proxy/sonnet" in config
         assert "claude-proxy/sonnet:max" in config
-        assert "custom_handler: claude_proxy.handler.handler" in config
+        assert "custom_handler: handler.handler" in config
 
     def test_has_effort_variants(self):
         config = generate_config()

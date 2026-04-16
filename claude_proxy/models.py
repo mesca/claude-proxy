@@ -47,7 +47,7 @@ def generate_config() -> str:
     lines.append("litellm_settings:")
     lines.append("  custom_provider_map:")
     lines.append(f'    - provider: "{PROVIDER}"')
-    lines.append("      custom_handler: claude_proxy.handler.handler")
+    lines.append("      custom_handler: handler.handler")
     lines.append("")
 
     return "\n".join(lines)
