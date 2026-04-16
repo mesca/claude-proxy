@@ -8,7 +8,6 @@ Claude's response for structured tool_calls JSON.
 from __future__ import annotations
 
 import json
-import os
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from typing import Any
@@ -34,14 +33,6 @@ from claude_proxy.models import parse_model_string
 # ---------------------------------------------------------------------------
 
 
-def _default_cwd() -> str | None:
-    return os.environ.get("CLAUDE_PROXY_CWD")
-
-
-def _append_system_prompt() -> bool:
-    return os.environ.get("CLAUDE_PROXY_APPEND_SYSTEM_PROMPT") == "1"
-
-
 def _content_to_text(content: str | list[dict[str, Any]] | None) -> str:
     """Extract text from OpenAI content (string or content-block list)."""
     if isinstance(content, list):
@@ -61,13 +52,18 @@ def _extract_prompt(messages: list[dict[str, Any]]) -> str:
     raise ClaudeCliError(400, err)
 
 
-def _extract_system_prompt(messages: list[dict[str, Any]]) -> str | None:
-    """Extract the system message content from the message array."""
+def _extract_system_prompt(messages: list[dict[str, Any]]) -> str:
+    """Extract the system message content, with a generic fallback.
+
+    Always returns a non-empty string so --system-prompt replaces Claude's
+    default (which contains built-in tool descriptions we don't want).
+    """
     for msg in messages:
         if msg.get("role") == "system":
             text = _content_to_text(msg.get("content", ""))
-            return text or None
-    return None
+            if text:
+                return text
+    return "You are a helpful assistant."
 
 
 def _is_new_conversation(messages: list[dict[str, Any]]) -> bool:
@@ -87,14 +83,6 @@ def _get_session_id(
     if _is_new_conversation(messages):
         return None
     return stored_session_id
-
-
-def _get_cwd(kwargs: dict[str, Any]) -> str | None:
-    optional_params = kwargs.get("optional_params", {})
-    cwd = optional_params.get("cwd")
-    if cwd:
-        return str(cwd)
-    return _default_cwd()
 
 
 def _get_model_and_effort(model: str) -> tuple[str | None, str | None]:
@@ -221,10 +209,10 @@ def _parse_tool_response(result_text: str) -> list[dict[str, Any]] | None:
     tool_calls: list[dict[str, Any]] = [raw] if isinstance(raw, dict) else raw
     if not isinstance(tool_calls, list) or not tool_calls:
         return None
-    # Ensure each tool call has an id
+    # Normalize IDs to OpenAI call_* format
     for tc in tool_calls:
-        if not tc.get("id"):
-            tc["id"] = f"call_{uuid.uuid4().hex[:8]}"
+        raw_id = tc.get("id") or uuid.uuid4().hex[:8]
+        tc["id"] = raw_id if str(raw_id).startswith("call_") else f"call_{raw_id}"
     return tool_calls
 
 
@@ -435,7 +423,6 @@ class ClaudeProxyHandler(CustomLLM):
         system_prompt = _build_tool_system_prompt(client_system, tools)
         session_id = _get_session_id(kwargs, messages, self._session_id)
         model_name, effort = _get_model_and_effort(model)
-        cwd = _get_cwd(kwargs)
 
         if _is_new_conversation(messages):
             ClaudeProxyHandler._session_id = None
@@ -447,7 +434,7 @@ class ClaudeProxyHandler(CustomLLM):
 
         result = cli.run_sync(
             prompt, session_id=session_id, model=model_name, effort=effort,
-            cwd=cwd, system_prompt=system_prompt, append_system_prompt=_append_system_prompt(),
+            system_prompt=system_prompt,
         )
         self._update_session(result)
 
@@ -464,7 +451,6 @@ class ClaudeProxyHandler(CustomLLM):
         system_prompt = _build_tool_system_prompt(client_system, tools)
         session_id = _get_session_id(kwargs, messages, self._session_id)
         model_name, effort = _get_model_and_effort(model)
-        cwd = _get_cwd(kwargs)
 
         if _is_new_conversation(messages):
             ClaudeProxyHandler._session_id = None
@@ -476,7 +462,7 @@ class ClaudeProxyHandler(CustomLLM):
 
         result = await cli.run_async(
             prompt, session_id=session_id, model=model_name, effort=effort,
-            cwd=cwd, system_prompt=system_prompt, append_system_prompt=_append_system_prompt(),
+            system_prompt=system_prompt,
         )
         self._update_session(result)
 
@@ -495,7 +481,6 @@ class ClaudeProxyHandler(CustomLLM):
         system_prompt = _build_tool_system_prompt(client_system, tools)
         session_id = _get_session_id(kwargs, messages, self._session_id)
         model_name, effort = _get_model_and_effort(model)
-        cwd = _get_cwd(kwargs)
 
         if _is_new_conversation(messages):
             ClaudeProxyHandler._session_id = None
@@ -511,7 +496,7 @@ class ClaudeProxyHandler(CustomLLM):
 
         for event in cli.stream_sync(
             prompt, session_id=session_id, model=model_name, effort=effort,
-            cwd=cwd, system_prompt=system_prompt, append_system_prompt=_append_system_prompt(),
+            system_prompt=system_prompt,
         ):
             if event.get("session_id"):
                 ClaudeProxyHandler._session_id = event["session_id"]
@@ -546,7 +531,6 @@ class ClaudeProxyHandler(CustomLLM):
         system_prompt = _build_tool_system_prompt(client_system, tools)
         session_id = _get_session_id(kwargs, messages, self._session_id)
         model_name, effort = _get_model_and_effort(model)
-        cwd = _get_cwd(kwargs)
 
         if _is_new_conversation(messages):
             ClaudeProxyHandler._session_id = None
@@ -561,7 +545,7 @@ class ClaudeProxyHandler(CustomLLM):
 
         async for event in cli.stream_async(
             prompt, session_id=session_id, model=model_name, effort=effort,
-            cwd=cwd, system_prompt=system_prompt, append_system_prompt=_append_system_prompt(),
+            system_prompt=system_prompt,
         ):
             if event.get("session_id"):
                 ClaudeProxyHandler._session_id = event["session_id"]
@@ -592,14 +576,13 @@ class ClaudeProxyHandler(CustomLLM):
         system_prompt = _extract_system_prompt(messages)
         session_id = _get_session_id(kwargs, messages, self._session_id)
         model_name, effort = _get_model_and_effort(model)
-        cwd = _get_cwd(kwargs)
 
         if _is_new_conversation(messages):
             ClaudeProxyHandler._session_id = None
 
         result = cli.run_sync(
             prompt, session_id=session_id, model=model_name, effort=effort,
-            cwd=cwd, system_prompt=system_prompt, append_system_prompt=_append_system_prompt(),
+            system_prompt=system_prompt,
         )
         self._update_session(result)
         return _build_model_response(result, model)
@@ -609,14 +592,13 @@ class ClaudeProxyHandler(CustomLLM):
         system_prompt = _extract_system_prompt(messages)
         session_id = _get_session_id(kwargs, messages, self._session_id)
         model_name, effort = _get_model_and_effort(model)
-        cwd = _get_cwd(kwargs)
 
         if _is_new_conversation(messages):
             ClaudeProxyHandler._session_id = None
 
         result = await cli.run_async(
             prompt, session_id=session_id, model=model_name, effort=effort,
-            cwd=cwd, system_prompt=system_prompt, append_system_prompt=_append_system_prompt(),
+            system_prompt=system_prompt,
         )
         self._update_session(result)
         return _build_model_response(result, model)
@@ -626,7 +608,6 @@ class ClaudeProxyHandler(CustomLLM):
         system_prompt = _extract_system_prompt(messages)
         session_id = _get_session_id(kwargs, messages, self._session_id)
         model_name, effort = _get_model_and_effort(model)
-        cwd = _get_cwd(kwargs)
 
         if _is_new_conversation(messages):
             ClaudeProxyHandler._session_id = None
@@ -636,7 +617,7 @@ class ClaudeProxyHandler(CustomLLM):
 
         for event in cli.stream_sync(
             prompt, session_id=session_id, model=model_name, effort=effort,
-            cwd=cwd, system_prompt=system_prompt, append_system_prompt=_append_system_prompt(),
+            system_prompt=system_prompt,
         ):
             if event.get("session_id"):
                 ClaudeProxyHandler._session_id = event["session_id"]
@@ -665,7 +646,6 @@ class ClaudeProxyHandler(CustomLLM):
         system_prompt = _extract_system_prompt(messages)
         session_id = _get_session_id(kwargs, messages, self._session_id)
         model_name, effort = _get_model_and_effort(model)
-        cwd = _get_cwd(kwargs)
 
         if _is_new_conversation(messages):
             ClaudeProxyHandler._session_id = None
@@ -675,7 +655,7 @@ class ClaudeProxyHandler(CustomLLM):
 
         async for event in cli.stream_async(
             prompt, session_id=session_id, model=model_name, effort=effort,
-            cwd=cwd, system_prompt=system_prompt, append_system_prompt=_append_system_prompt(),
+            system_prompt=system_prompt,
         ):
             if event.get("session_id"):
                 ClaudeProxyHandler._session_id = event["session_id"]

@@ -156,7 +156,8 @@ def _parse_tool_calls_json(text: str) -> list[dict[str, Any]] | None:
         return None
     result: list[dict[str, Any]] = []
     for i, tc in enumerate(calls):
-        call_id = tc.get("id") or f"call_{uuid.uuid4().hex[:8]}"
+        raw_id = tc.get("id") or uuid.uuid4().hex[:8]
+        call_id = raw_id if str(raw_id).startswith("call_") else f"call_{raw_id}"
         result.append({
             "id": str(call_id),
             "type": "function",

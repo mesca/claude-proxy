@@ -24,14 +24,6 @@ def main() -> None:
         update_models()
         return
 
-    # Capture the user's working directory before LiteLLM changes anything
-    os.environ.setdefault("CLAUDE_PROXY_CWD", os.getcwd())
-
-    # --append-system-prompt: append to Claude's default system prompt instead of replacing it
-    if "--append-system-prompt" in sys.argv:
-        os.environ["CLAUDE_PROXY_APPEND_SYSTEM_PROMPT"] = "1"
-        sys.argv.remove("--append-system-prompt")
-
     # Skip the remote model cost map fetch (adds seconds to startup)
     os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "true")
 

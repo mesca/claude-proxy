@@ -21,7 +21,6 @@ def build_command(
     effort: str | None = None,
     streaming: bool = False,
     system_prompt: str | None = None,
-    append_system_prompt: bool = False,
 ) -> list[str]:
     """Build the claude CLI command arguments."""
     cmd = [
@@ -36,8 +35,7 @@ def build_command(
     ]
 
     if system_prompt:
-        flag = "--append-system-prompt" if append_system_prompt else "--system-prompt"
-        cmd.extend([flag, system_prompt])
+        cmd.extend(["--system-prompt", system_prompt])
 
     if streaming:
         cmd.extend(["--output-format", "stream-json", "--verbose"])
@@ -180,14 +178,12 @@ def run_sync(
     session_id: str | None = None,
     model: str | None = None,
     effort: str | None = None,
-    cwd: str | None = None,
     timeout: float | None = None,
     system_prompt: str | None = None,
-    append_system_prompt: bool = False,
 ) -> dict[str, Any]:
     """Run a non-streaming claude CLI call synchronously."""
-    cmd = build_command(prompt, session_id=session_id, model=model, effort=effort, streaming=False, system_prompt=system_prompt, append_system_prompt=append_system_prompt)
-    logger.debug("Running command: {} cwd={}", cmd, cwd)
+    cmd = build_command(prompt, session_id=session_id, model=model, effort=effort, streaming=False, system_prompt=system_prompt)
+    logger.debug("Running command: {}", cmd)
 
     try:
         result = subprocess.run(  # noqa: S603
@@ -195,7 +191,6 @@ def run_sync(
             capture_output=True,
             text=True,
             timeout=timeout,
-            cwd=cwd,
         )
     except FileNotFoundError as e:
         msg = f"claude CLI not found: {e}"
@@ -217,21 +212,18 @@ async def run_async(
     session_id: str | None = None,
     model: str | None = None,
     effort: str | None = None,
-    cwd: str | None = None,
     timeout: float | None = None,
     system_prompt: str | None = None,
-    append_system_prompt: bool = False,
 ) -> dict[str, Any]:
     """Run a non-streaming claude CLI call asynchronously."""
-    cmd = build_command(prompt, session_id=session_id, model=model, effort=effort, streaming=False, system_prompt=system_prompt, append_system_prompt=append_system_prompt)
-    logger.debug("Running command: {} cwd={}", cmd, cwd)
+    cmd = build_command(prompt, session_id=session_id, model=model, effort=effort, streaming=False, system_prompt=system_prompt)
+    logger.debug("Running command: {}", cmd)
 
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            cwd=cwd,
         )
     except FileNotFoundError as e:
         msg = f"claude CLI not found: {e}"
@@ -264,14 +256,12 @@ def stream_sync(
     session_id: str | None = None,
     model: str | None = None,
     effort: str | None = None,
-    cwd: str | None = None,
     timeout: float | None = None,
     system_prompt: str | None = None,
-    append_system_prompt: bool = False,
 ) -> Iterator[dict[str, Any]]:
     """Stream claude CLI output synchronously."""
-    cmd = build_command(prompt, session_id=session_id, model=model, effort=effort, streaming=True, system_prompt=system_prompt, append_system_prompt=append_system_prompt)
-    logger.debug("Streaming command: {} cwd={}", cmd, cwd)
+    cmd = build_command(prompt, session_id=session_id, model=model, effort=effort, streaming=True, system_prompt=system_prompt)
+    logger.debug("Streaming command: {}", cmd)
 
     try:
         proc = subprocess.Popen(  # noqa: S603
@@ -279,7 +269,6 @@ def stream_sync(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            cwd=cwd,
         )
     except FileNotFoundError as e:
         msg = f"claude CLI not found: {e}"
@@ -308,21 +297,18 @@ async def stream_async(
     session_id: str | None = None,
     model: str | None = None,
     effort: str | None = None,
-    cwd: str | None = None,
     timeout: float | None = None,
     system_prompt: str | None = None,
-    append_system_prompt: bool = False,
 ) -> AsyncIterator[dict[str, Any]]:
     """Stream claude CLI output asynchronously."""
-    cmd = build_command(prompt, session_id=session_id, model=model, effort=effort, streaming=True, system_prompt=system_prompt, append_system_prompt=append_system_prompt)
-    logger.debug("Streaming command: {} cwd={}", cmd, cwd)
+    cmd = build_command(prompt, session_id=session_id, model=model, effort=effort, streaming=True, system_prompt=system_prompt)
+    logger.debug("Streaming command: {}", cmd)
 
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            cwd=cwd,
         )
     except FileNotFoundError as e:
         msg = f"claude CLI not found: {e}"

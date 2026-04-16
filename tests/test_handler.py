@@ -21,7 +21,6 @@ from claude_proxy.cli import (
 from claude_proxy.handler import (
     ClaudeProxyHandler,
     _extract_prompt,
-    _get_cwd,
     _get_model_and_effort,
     _get_session_id,
     _is_new_conversation,
@@ -211,16 +210,6 @@ class TestGetSessionId:
         assert _get_session_id(kwargs, messages, None) is None
 
 
-class TestGetCwd:
-    def test_from_optional_params(self):
-        kwargs = {"optional_params": {"cwd": "/tmp/project"}}
-        assert _get_cwd(kwargs) == "/tmp/project"
-
-    def test_no_cwd(self):
-        result = _get_cwd({"optional_params": {}})
-        assert result is None or isinstance(result, str)
-
-
 class TestParseModelString:
     def test_default(self):
         assert parse_model_string("default") == (None, None)
@@ -356,12 +345,6 @@ class TestCompletion:
         resp = litellm.completion(model=MODEL, messages=[{"role": "user", "content": "Hello"}])
         assert resp.usage.prompt_tokens == 10  # type: ignore[union-attr]
         assert resp.usage.completion_tokens == 20  # type: ignore[union-attr]
-
-    @patch("claude_proxy.cli.subprocess.run")
-    def test_cwd_passed_to_subprocess(self, mock_run):
-        mock_run.return_value = _mock_subprocess_run(stdout=FAKE_CLI_RESULT)
-        litellm.completion(model=MODEL, messages=[{"role": "user", "content": "Hello"}], cwd="/tmp/myproject")
-        assert mock_run.call_args[1]["cwd"] == "/tmp/myproject"
 
 
 class TestAsyncCompletion:

@@ -116,18 +116,6 @@ For explicit control, pass `session_id` in the request body:
 
 The session ID is returned in the `system_fingerprint` field of every response.
 
-### Working directory
-
-By default, the Claude CLI runs in the directory where you started `claude-proxy`. Override it with an environment variable or per-request:
-
-```bash
-CLAUDE_PROXY_CWD=/path/to/project claude-proxy
-```
-
-```json
-{"model": "claude-sonnet-4-6", "messages": [...], "cwd": "/path/to/project"}
-```
-
 ## Tool support
 
 The proxy supports the OpenAI tool calling protocol. All tool execution happens on the **client side** (e.g. OpenCode) — the proxy itself does not execute tools.
@@ -136,15 +124,7 @@ When Claude responds with a `{"tool_calls": ...}` JSON object, the proxy's ASGI 
 
 ## System prompt
 
-When the client sends a `system` message, it replaces Claude's default system prompt via `--system-prompt`. This gives Claude a clean slate: no built-in tool descriptions, no CLAUDE.md, no project context — only what the client sends.
-
-When no `system` message is present, Claude uses its default system prompt (with `--tools ""` stripping built-in tool descriptions).
-
-To always keep Claude's default system prompt and append the client's message instead of replacing:
-
-```bash
-claude-proxy --append-system-prompt
-```
+The client's `system` message replaces Claude's default system prompt via `--system-prompt`. This gives Claude a clean slate: no built-in tool descriptions, no CLAUDE.md, no project context — only what the client sends. When no `system` message is present, a generic fallback is used.
 
 ## OpenCode configuration
 

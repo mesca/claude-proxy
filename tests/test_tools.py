@@ -239,13 +239,21 @@ class TestParseToolResponse:
         assert result is not None
         assert result[0]["id"].startswith("call_")
 
-    def test_preserves_existing_ids(self):
+    def test_normalizes_ids_to_call_prefix(self):
         response = json.dumps({
             "tool_calls": [{"id": "my_id", "name": "test", "arguments": {}}]
         })
         result = _parse_tool_response(response)
         assert result is not None
-        assert result[0]["id"] == "my_id"
+        assert result[0]["id"] == "call_my_id"
+
+    def test_preserves_call_prefix_ids(self):
+        response = json.dumps({
+            "tool_calls": [{"id": "call_abc123", "name": "test", "arguments": {}}]
+        })
+        result = _parse_tool_response(response)
+        assert result is not None
+        assert result[0]["id"] == "call_abc123"
 
     def test_whitespace_around_json(self):
         response = '  \n{"tool_calls": [{"name": "test", "arguments": {}}]}\n  '
@@ -314,24 +322,15 @@ class TestResolveModelName:
 
 
 class TestBuildCommandSystemPrompt:
-    def test_replaces_by_default(self):
+    def test_with_system_prompt(self):
         cmd = build_command("hello", system_prompt="Be helpful")
         assert "--system-prompt" in cmd
         idx = cmd.index("--system-prompt")
         assert cmd[idx + 1] == "Be helpful"
-        assert "--append-system-prompt" not in cmd
-
-    def test_append_mode(self):
-        cmd = build_command("hello", system_prompt="Be helpful", append_system_prompt=True)
-        assert "--append-system-prompt" in cmd
-        idx = cmd.index("--append-system-prompt")
-        assert cmd[idx + 1] == "Be helpful"
-        assert "--system-prompt" not in cmd
 
     def test_without_system_prompt(self):
         cmd = build_command("hello")
         assert "--system-prompt" not in cmd
-        assert "--append-system-prompt" not in cmd
 
 
 # ---------------------------------------------------------------------------
@@ -340,10 +339,11 @@ class TestBuildCommandSystemPrompt:
 
 
 class TestExtractSystemPrompt:
-    def test_no_system(self):
+    def test_no_system_returns_fallback(self):
         from claude_proxy.handler import _extract_system_prompt
 
-        assert _extract_system_prompt([{"role": "user", "content": "Hi"}]) is None
+        result = _extract_system_prompt([{"role": "user", "content": "Hi"}])
+        assert result == "You are a helpful assistant."
 
     def test_string_content(self):
         from claude_proxy.handler import _extract_system_prompt
@@ -351,10 +351,10 @@ class TestExtractSystemPrompt:
         msgs = [{"role": "system", "content": "Be helpful"}, {"role": "user", "content": "Hi"}]
         assert _extract_system_prompt(msgs) == "Be helpful"
 
-    def test_empty_content(self):
+    def test_empty_content_returns_fallback(self):
         from claude_proxy.handler import _extract_system_prompt
 
-        assert _extract_system_prompt([{"role": "system", "content": ""}]) is None
+        assert _extract_system_prompt([{"role": "system", "content": ""}]) == "You are a helpful assistant."
 
 
 # ---------------------------------------------------------------------------
