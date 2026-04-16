@@ -2,9 +2,7 @@
 
 OpenAI-compatible proxy that routes requests to the Claude CLI.
 
-> **Disclaimer** — Use at your own risk. The authors make no claims regarding compliance with Anthropic's [Terms of Service](https://www.anthropic.com/legal/consumer-terms) or [Acceptable Use Policy](https://www.anthropic.com/legal/aup). It is your responsibility to review and comply with these policies, which may change at any time.
->
-> This project calls the official Claude CLI as a subprocess using your own authenticated account. No API keys are intercepted, no authentication is bypassed, and no proprietary systems are reverse-engineered.
+> **Disclaimer** — This project calls the official Claude CLI as a subprocess using your own authenticated account. No API keys are intercepted, no authentication is bypassed, and no proprietary systems are reverse-engineered. Use at your own risk. The authors make no claims regarding compliance with Anthropic's [Terms of Service](https://www.anthropic.com/legal/consumer-terms) or [Acceptable Use Policy](https://www.anthropic.com/legal/aup). It is your responsibility to review and comply with these policies, which may change at any time.
 
 <details>
 <summary><strong>Table of contents</strong></summary>
