@@ -51,6 +51,16 @@ def _format_history(messages: list[dict[str, Any]]) -> str:
     Reproduces OpenAI multi-turn behavior: each message is labeled with its
     role so Claude can follow the conversation without --resume.
     """
+    # Build a map of tool_call_id → tool name from assistant messages
+    call_id_to_name: dict[str, str] = {}
+    for msg in messages:
+        if msg.get("role") == "assistant":
+            for tc in msg.get("tool_calls") or []:
+                tc_id = tc.get("id", "")
+                fn = tc.get("function", {})
+                if tc_id and fn.get("name"):
+                    call_id_to_name[tc_id] = fn["name"]
+
     parts: list[str] = []
     for msg in messages:
         role = msg.get("role")
@@ -70,8 +80,8 @@ def _format_history(messages: list[dict[str, Any]]) -> str:
             elif content:
                 parts.append(f"[assistant]\n{content}")
         elif role == "tool":
-            name = msg.get("name", "unknown")
             call_id = msg.get("tool_call_id", "")
+            name = msg.get("name") or call_id_to_name.get(call_id, "tool")
             parts.append(
                 f'<tool_result name="{name}" call_id="{call_id}">\n'
                 f"{content}\n"
@@ -378,6 +388,16 @@ def _format_tool_results(messages: list[dict[str, Any]]) -> str:
 
     Expects messages ending with: ..., assistant(tool_calls), tool, [tool, ...], [user]
     """
+    # Build a map of tool_call_id → tool name from assistant messages
+    call_id_to_name: dict[str, str] = {}
+    for msg in messages:
+        if msg.get("role") == "assistant":
+            for tc in msg.get("tool_calls") or []:
+                tc_id = tc.get("id", "")
+                fn = tc.get("function", {})
+                if tc_id and fn.get("name"):
+                    call_id_to_name[tc_id] = fn["name"]
+
     parts: list[str] = []
     trailing_user: str | None = None
 
@@ -387,8 +407,8 @@ def _format_tool_results(messages: list[dict[str, Any]]) -> str:
         if role == "user" and not parts:
             trailing_user = _content_to_text(msg.get("content", ""))
         elif role == "tool":
-            name = msg.get("name", "unknown")
             call_id = msg.get("tool_call_id", "")
+            name = msg.get("name") or call_id_to_name.get(call_id, "tool")
             content = str(msg.get("content", ""))
             parts.append(
                 f'<tool_result name="{name}" call_id="{call_id}">\n'
