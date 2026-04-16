@@ -297,7 +297,8 @@ def stream_sync(
         proc.wait(timeout=timeout)
         if proc.returncode and proc.returncode != 0:
             stderr = proc.stderr.read() if proc.stderr else ""  # type: ignore[union-attr]
-            logger.warning("claude CLI exited with code {}: {}", proc.returncode, stderr.strip())
+            msg = stderr.strip() or f"claude CLI exited with code {proc.returncode}"
+            raise ClaudeCliError(500, msg)
 
 
 async def stream_async(
@@ -342,4 +343,5 @@ async def stream_async(
         await proc.wait()
         if proc.returncode and proc.returncode != 0:
             stderr_bytes = await proc.stderr.read() if proc.stderr else b""  # type: ignore[union-attr]
-            logger.warning("claude CLI exited with code {}: {}", proc.returncode, stderr_bytes.decode().strip())
+            msg = stderr_bytes.decode().strip() or f"claude CLI exited with code {proc.returncode}"
+            raise ClaudeCliError(500, msg)
