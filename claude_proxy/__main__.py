@@ -1,5 +1,6 @@
 """Entry point: starts the LiteLLM proxy with the bundled config."""
 
+import argparse
 import os
 import sys
 from pathlib import Path
@@ -9,7 +10,7 @@ def _config_path() -> Path:
     return Path(__file__).resolve().parent / "config.yaml"
 
 
-def update_models() -> None:
+def _update_models() -> None:
     """Regenerate config.yaml from model definitions."""
     from claude_proxy.models import generate_config
 
@@ -18,23 +19,49 @@ def update_models() -> None:
     print(f"Updated {path}")  # noqa: T201
 
 
+def _build_parser() -> argparse.ArgumentParser:
+    from claude_proxy import __version__
+
+    parser = argparse.ArgumentParser(
+        prog="claude-proxy",
+        description="OpenAI-compatible proxy for the Claude CLI.",
+    )
+    parser.add_argument(
+        "-v", "--version", action="version", version=f"%(prog)s {__version__}",
+    )
+    sub = parser.add_subparsers(dest="command")
+    sub.add_parser("update-models", help="Regenerate config.yaml from model definitions")
+
+    parser.add_argument(
+        "--host", default="127.0.0.1", help="Listen address (default: 127.0.0.1)",
+    )
+    parser.add_argument(
+        "--port", type=int, default=4000, help="Listen port (default: 4000)",
+    )
+    parser.add_argument(
+        "--session-header", metavar="HEADER",
+        help="HTTP header for session affinity (default: auto-discover)",
+    )
+    parser.add_argument(
+        "--stateless", action="store_true",
+        help="Disable sessions — full history sent each turn",
+    )
+    return parser
+
+
 def main() -> None:
-    # Handle subcommands before LiteLLM takes over sys.argv
-    if len(sys.argv) > 1 and sys.argv[1] == "update-models":
-        update_models()
+    parser = _build_parser()
+    args = parser.parse_args()
+
+    if args.command == "update-models":
+        _update_models()
         return
 
-    # --stateless: disable session management
-    if "--stateless" in sys.argv:
+    # Store our flags as env vars (read by middleware/handler)
+    if args.stateless:
         os.environ["CLAUDE_PROXY_STATELESS"] = "1"
-        sys.argv.remove("--stateless")
-
-    # --session-header <name>: override session header auto-discovery
-    if "--session-header" in sys.argv:
-        idx = sys.argv.index("--session-header")
-        if idx + 1 < len(sys.argv):
-            os.environ["CLAUDE_PROXY_SESSION_HEADER"] = sys.argv[idx + 1]
-            sys.argv = sys.argv[:idx] + sys.argv[idx + 2:]
+    if args.session_header:
+        os.environ["CLAUDE_PROXY_SESSION_HEADER"] = args.session_header
 
     # Skip the remote model cost map fetch (adds seconds to startup)
     os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "true")
@@ -44,19 +71,15 @@ def main() -> None:
         print("Config not found. Run: claude-proxy update-models", file=sys.stderr)  # noqa: T201
         sys.exit(1)
 
-    # Build CLI args, injecting --config and --host defaults if not provided
-    user_args = sys.argv[1:]
-    injected: list[str] = []
+    # Build LiteLLM CLI args
+    sys.argv = [
+        "litellm",
+        "--config", str(config_path),
+        "--host", args.host,
+        "--port", str(args.port),
+    ]
 
-    if "--config" not in user_args and "-c" not in user_args:
-        injected.extend(["--config", str(config_path)])
-
-    if "--host" not in user_args:
-        injected.extend(["--host", "127.0.0.1"])
-
-    sys.argv = ["litellm", *injected, *user_args]
-
-    # Add middleware to fix reasoning_content in SSE streams
+    # Add middleware
     from litellm.proxy.proxy_server import app  # type: ignore[import-untyped]
 
     from claude_proxy.middleware import ReasoningContentMiddleware, ToolCallsMiddleware
