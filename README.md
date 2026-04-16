@@ -39,11 +39,12 @@ claude-proxy
 
 The proxy starts on `http://localhost:4000`. All LiteLLM flags work (e.g. `claude-proxy --port 8080`).
 
-To stop the proxy, press `Ctrl+C`. If a stale process remains, find and kill it:
+Run in the background with tmux (detach/reattach):
 
 ```bash
-lsof -i :4000
-kill <PID>
+tmux new -d -s proxy 'claude-proxy'   # start in background
+tmux attach -t proxy                   # see logs (Ctrl+B D to detach)
+tmux kill-session -t proxy             # stop
 ```
 
 ## Available models
