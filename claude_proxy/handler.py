@@ -56,18 +56,27 @@ def _extract_prompt(messages: list[dict[str, Any]]) -> str:
     raise ClaudeCliError(400, err)
 
 
+_TOOL_FORMAT_INSTRUCTIONS = (
+    "\n\nWhen you want to use a tool, respond with ONLY a "
+    'JSON object: {"tool_calls": [{"id": "<id>", "name": "<tool>", "arguments": {...}}]}\n'
+    "When you want to respond with text, just respond normally without JSON."
+)
+
+
 def _extract_system_prompt(messages: list[dict[str, Any]]) -> str:
-    """Extract the system message content, defaulting to a minimal prompt.
+    """Extract the system message content and append tool format instructions.
 
     Always returns a non-empty string so --system-prompt replaces the default
     (which contains built-in tool descriptions we don't want).
+    The tool format instructions ensure Claude uses JSON for tool calls
+    (not its native XML format), so the middleware can detect and rewrite them.
     """
+    client_system = ""
     for msg in messages:
         if msg.get("role") == "system":
-            text = _content_to_text(msg.get("content", ""))
-            if text:
-                return text
-    return "You are a helpful assistant."
+            client_system = _content_to_text(msg.get("content", ""))
+            break
+    return (client_system or "You are a helpful assistant.") + _TOOL_FORMAT_INSTRUCTIONS
 
 
 def _is_new_conversation(messages: list[dict[str, Any]]) -> bool:

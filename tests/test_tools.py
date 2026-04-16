@@ -138,17 +138,21 @@ class TestBuildCommandSystemPrompt:
 
 
 class TestExtractSystemPrompt:
-    def test_no_system_returns_default(self):
+    def test_no_system_returns_default_with_instructions(self):
         result = _extract_system_prompt([{"role": "user", "content": "Hi"}])
-        assert result  # always non-empty
+        assert "helpful assistant" in result
+        assert "tool_calls" in result
 
-    def test_string_content(self):
+    def test_string_content_with_instructions(self):
         msgs = [{"role": "system", "content": "Be helpful"}, {"role": "user", "content": "Hi"}]
-        assert _extract_system_prompt(msgs) == "Be helpful"
+        result = _extract_system_prompt(msgs)
+        assert result.startswith("Be helpful")
+        assert "tool_calls" in result
 
     def test_empty_content_returns_default(self):
         result = _extract_system_prompt([{"role": "system", "content": ""}])
-        assert result  # falls back to default
+        assert "helpful assistant" in result
+        assert "tool_calls" in result
 
 
 # ---------------------------------------------------------------------------
@@ -177,7 +181,9 @@ class TestSystemPromptPassthrough:
         cmd = mock_run.call_args[0][0]
         assert "--system-prompt" in cmd
         idx = cmd.index("--system-prompt")
-        assert cmd[idx + 1] == "Be concise."
+        sys_prompt = cmd[idx + 1]
+        assert sys_prompt.startswith("Be concise.")
+        assert "tool_calls" in sys_prompt
 
     @patch("claude_proxy.cli.subprocess.run")
     def test_no_system_message_uses_default(self, mock_run):
