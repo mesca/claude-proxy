@@ -53,6 +53,22 @@ def generate_config() -> str:
     return "\n".join(lines)
 
 
+def resolve_model_name(alias: str | None) -> str:
+    """Map a CLI alias to the full Anthropic model name.
+
+    Examples:
+        "opus"   → "claude-opus-4-6"
+        "sonnet" → "claude-sonnet-4-6"
+        None     → "claude-sonnet-4-6"  (default)
+    """
+    if not alias:
+        return MODELS[1]["name"]  # default to sonnet
+    for m in MODELS:
+        if m["alias"] == alias:
+            return m["name"]
+    return alias  # assume full name already
+
+
 def parse_model_string(model: str) -> tuple[str | None, str | None]:
     """Parse a model string into (cli_model, effort).
 

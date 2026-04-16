@@ -54,7 +54,7 @@ class ToolCallsMiddleware:
             await self.app(scope, receive, send)
             return
 
-        # Buffer all response messages to detect tool_calls
+        # Buffer all response messages
         buffered: list[dict] = []
         headers_message: dict | None = None
 
