@@ -277,7 +277,13 @@ curl http://localhost:4000/v1/chat/completions \
 
 ### System prompt passthrough
 
-The client's `system` message is always passed to Claude via `--append-system-prompt`, both for tool-using and tool-free requests.
+The client's `system` message is passed to Claude via `--system-prompt`, replacing the default system prompt. This gives Claude a clean slate: no built-in tool descriptions, no CLAUDE.md, no project context — only what the client sends.
+
+To keep Claude's default system prompt and append instead:
+
+```bash
+claude-proxy --append-system-prompt
+```
 
 ## CLI flags
 

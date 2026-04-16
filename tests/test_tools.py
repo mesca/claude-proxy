@@ -314,14 +314,23 @@ class TestResolveModelName:
 
 
 class TestBuildCommandSystemPrompt:
-    def test_with_system_prompt(self):
+    def test_replaces_by_default(self):
         cmd = build_command("hello", system_prompt="Be helpful")
+        assert "--system-prompt" in cmd
+        idx = cmd.index("--system-prompt")
+        assert cmd[idx + 1] == "Be helpful"
+        assert "--append-system-prompt" not in cmd
+
+    def test_append_mode(self):
+        cmd = build_command("hello", system_prompt="Be helpful", append_system_prompt=True)
         assert "--append-system-prompt" in cmd
         idx = cmd.index("--append-system-prompt")
         assert cmd[idx + 1] == "Be helpful"
+        assert "--system-prompt" not in cmd
 
     def test_without_system_prompt(self):
         cmd = build_command("hello")
+        assert "--system-prompt" not in cmd
         assert "--append-system-prompt" not in cmd
 
 
@@ -442,7 +451,7 @@ class TestToolRouting:
         )
 
         cmd = mock_run.call_args[0][0]
-        sys_idx = cmd.index("--append-system-prompt") + 1
+        sys_idx = cmd.index("--system-prompt") + 1
         sys_prompt = cmd[sys_idx]
         assert "You are a coding assistant." in sys_prompt
         assert "read_file" in sys_prompt
@@ -464,8 +473,7 @@ class TestToolRouting:
         )
 
         cmd = mock_run.call_args[0][0]
-        sys_idx = cmd.index("--append-system-prompt") + 1
-        # Without tools, system prompt is just the client's message
+        sys_idx = cmd.index("--system-prompt") + 1
         assert cmd[sys_idx] == "Be concise."
 
     @patch("claude_proxy.cli.subprocess.run")

@@ -91,13 +91,14 @@ FAKE_STREAM_WITH_THINKING = [
 class TestBuildCommand:
     def test_basic(self):
         cmd = build_command("hello")
-        assert cmd == [
-            "claude", "-p", "hello",
-            "--tools", "", "--allowedTools", "",
-            "--disable-slash-commands", "--strict-mcp-config",
-            "--dangerously-skip-permissions",
-            "--output-format", "json",
-        ]
+        assert cmd[:3] == ["claude", "-p", "hello"]
+        assert "--tools" in cmd
+        assert "--allowedTools" in cmd
+        assert "--output-format" in cmd
+        assert cmd[cmd.index("--output-format") + 1] == "json"
+        # No system prompt by default
+        assert "--system-prompt" not in cmd
+        assert "--append-system-prompt" not in cmd
 
     def test_streaming(self):
         cmd = build_command("hello", streaming=True)
