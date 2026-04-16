@@ -344,18 +344,22 @@ class TestExtractSystemPrompt:
         from claude_proxy.handler import _extract_system_prompt
 
         result = _extract_system_prompt([{"role": "user", "content": "Hi"}])
-        assert result == "You are a helpful assistant."
+        assert "helpful assistant" in result
+        assert "tool_result" in result
 
     def test_string_content(self):
         from claude_proxy.handler import _extract_system_prompt
 
         msgs = [{"role": "system", "content": "Be helpful"}, {"role": "user", "content": "Hi"}]
-        assert _extract_system_prompt(msgs) == "Be helpful"
+        result = _extract_system_prompt(msgs)
+        assert result.startswith("Be helpful")
+        assert "tool_result" in result
 
     def test_empty_content_returns_fallback(self):
         from claude_proxy.handler import _extract_system_prompt
 
-        assert _extract_system_prompt([{"role": "system", "content": ""}]) == "You are a helpful assistant."
+        result = _extract_system_prompt([{"role": "system", "content": ""}])
+        assert "helpful assistant" in result
 
 
 # ---------------------------------------------------------------------------
@@ -475,7 +479,7 @@ class TestToolRouting:
 
         cmd = mock_run.call_args[0][0]
         sys_idx = cmd.index("--system-prompt") + 1
-        assert cmd[sys_idx] == "Be concise."
+        assert cmd[sys_idx].startswith("Be concise.")
 
     @patch("claude_proxy.cli.subprocess.run")
     def test_no_tools_routes_to_cli_path(self, mock_run):

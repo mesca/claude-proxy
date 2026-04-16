@@ -97,18 +97,25 @@ def _extract_prompt(messages: list[dict[str, Any]]) -> str:
     raise ClaudeCliError(400, err)
 
 
+_TOOL_RESULT_HINT = (
+    "\n\nWhen you call a tool, the result will be provided in your next message "
+    "as a <tool_result> XML tag. Treat it as the tool's output and continue naturally."
+)
+
+
 def _extract_system_prompt(messages: list[dict[str, Any]]) -> str:
     """Extract the system message content, with a generic fallback.
 
     Always returns a non-empty string so --system-prompt replaces Claude's
     default (which contains built-in tool descriptions we don't want).
+    Appends a hint about tool results so Claude recognizes them as its own.
     """
     for msg in messages:
         if msg.get("role") == "system":
             text = _content_to_text(msg.get("content", ""))
             if text:
-                return text
-    return "You are a helpful assistant."
+                return text + _TOOL_RESULT_HINT
+    return "You are a helpful assistant." + _TOOL_RESULT_HINT
 
 
 def _get_model_and_effort(model: str) -> tuple[str | None, str | None]:
