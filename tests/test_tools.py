@@ -153,6 +153,15 @@ class TestIsToolResultTurn:
 
 
 class TestFormatToolResults:
+    def test_starts_with_framing(self):
+        msgs = [
+            {"role": "assistant", "content": None},
+            {"role": "tool", "tool_call_id": "tc_1", "name": "read_file", "content": "x"},
+        ]
+        result = _format_tool_results(msgs)
+        assert result.startswith("[SYSTEM NOTE:")
+        assert "tool calls YOU made" in result
+
     def test_single_result(self):
         msgs = [
             {"role": "assistant", "content": None},
@@ -403,8 +412,23 @@ class TestExtractSystemPrompt:
         result = _extract_system_prompt([{"role": "system", "content": ""}])
         assert "helpful assistant" in result
 
-    def test_with_tools_includes_schemas(self):
-        from claude_proxy.handler import _extract_system_prompt
+
+class TestBuildSystemPrompt:
+    def test_client_system_only_without_tools(self):
+        from claude_proxy.handler import _build_system_prompt
+
+        result = _build_system_prompt([{"role": "system", "content": "Be concise."}])
+        assert result == "Be concise."
+
+    def test_fallback_without_tools(self):
+        from claude_proxy.handler import _build_system_prompt
+
+        result = _build_system_prompt([{"role": "user", "content": "Hi"}])
+        assert "helpful assistant" in result
+        assert "tool_calls" not in result  # no tools → no instructions
+
+    def test_with_tools_appends_instructions_once(self):
+        from claude_proxy.handler import _build_system_prompt
         from claude_proxy.middleware import tools_var
 
         tools_var.set([{
@@ -416,12 +440,18 @@ class TestExtractSystemPrompt:
             },
         }])
         try:
-            result = _extract_system_prompt([{"role": "user", "content": "Hi"}])
+            result = _build_system_prompt([
+                {"role": "system", "content": "Be helpful."},
+                {"role": "user", "content": "Hi"},
+            ])
+            # Client system preserved
+            assert result.startswith("Be helpful.")
+            # Tool schemas present
             assert "bash" in result
             assert "command" in result
             assert "required" in result
-            assert "tool_result" in result
-            assert "tool_calls" in result
+            # Tool instructions present exactly once
+            assert result.count("Available tools:") == 1
         finally:
             tools_var.set(None)
 
@@ -591,8 +621,35 @@ class TestFormatHistory:
             {"role": "user", "content": "Hi"},
         ]
         result = _format_history(msgs)
-        assert "system" not in result.lower()
+        # [user] and [assistant] labels only (system filtered)
         assert "[user]\nHi" in result
+        assert "[system]" not in result
+
+    def test_tool_results_have_framing(self):
+        msgs = [
+            {"role": "user", "content": "Read foo.py"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "read_file", "arguments": "{}"}},
+            ]},
+            {"role": "tool", "tool_call_id": "c1", "content": "print('x')"},
+        ]
+        result = _format_history(msgs)
+        # Framing precedes the first tool_result in the group
+        assert "[SYSTEM NOTE:" in result
+        assert result.index("[SYSTEM NOTE:") < result.index("<tool_result")
+
+    def test_framing_once_per_consecutive_group(self):
+        msgs = [
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "x", "arguments": "{}"}},
+                {"id": "c2", "type": "function", "function": {"name": "y", "arguments": "{}"}},
+            ]},
+            {"role": "tool", "tool_call_id": "c1", "content": "a"},
+            {"role": "tool", "tool_call_id": "c2", "content": "b"},
+        ]
+        result = _format_history(msgs)
+        # Only one framing note for the consecutive group of two tool results
+        assert result.count("[SYSTEM NOTE:") == 1
 
     def test_tool_calls(self):
         msgs = [

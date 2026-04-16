@@ -45,11 +45,19 @@ def _content_to_text(content: str | list[dict[str, Any]] | None) -> str:
     return str(content) if content else ""
 
 
+_TOOL_RESULT_FRAMING = (
+    "[SYSTEM NOTE: The following are results from tool calls YOU made in "
+    "the previous turn. They are not user input. Use them to continue "
+    "answering the user's original request.]"
+)
+
+
 def _format_history(messages: list[dict[str, Any]]) -> str:
     """Format the full message history as a single prompt (stateless mode).
 
     Reproduces OpenAI multi-turn behavior: each message is labeled with its
     role so Claude can follow the conversation without --resume.
+    The framing note is prepended before each consecutive group of tool results.
     """
     # Build a map of tool_call_id → tool name from assistant messages
     call_id_to_name: dict[str, str] = {}
@@ -62,6 +70,7 @@ def _format_history(messages: list[dict[str, Any]]) -> str:
                     call_id_to_name[tc_id] = fn["name"]
 
     parts: list[str] = []
+    prev_was_tool = False
     for msg in messages:
         role = msg.get("role")
         if role == "system":
@@ -69,6 +78,7 @@ def _format_history(messages: list[dict[str, Any]]) -> str:
         content = _content_to_text(msg.get("content", ""))
         if role == "user":
             parts.append(f"[user]\n{content}")
+            prev_was_tool = False
         elif role == "assistant":
             tool_calls = msg.get("tool_calls")
             if tool_calls:
@@ -79,14 +89,20 @@ def _format_history(messages: list[dict[str, Any]]) -> str:
                     parts.append(f"[assistant]\n{tc_json}")
             elif content:
                 parts.append(f"[assistant]\n{content}")
+            prev_was_tool = False
         elif role == "tool":
             call_id = msg.get("tool_call_id", "")
             name = msg.get("name") or call_id_to_name.get(call_id, "tool")
-            parts.append(
+            block = (
                 f'<tool_result name="{name}" call_id="{call_id}">\n'
                 f"{content}\n"
                 f"</tool_result>"
             )
+            if not prev_was_tool:
+                parts.append(f"{_TOOL_RESULT_FRAMING}\n{block}")
+            else:
+                parts.append(block)
+            prev_was_tool = True
     return "\n\n".join(parts)
 
 
@@ -107,56 +123,33 @@ def _extract_prompt(messages: list[dict[str, Any]]) -> str:
     raise ClaudeCliError(400, err)
 
 
-def _build_tool_instructions(tools: list[dict[str, Any]]) -> str:
-    """Build tool protocol instructions with full schemas from the request."""
-    lines = [
-        "\n\nYou have access to tools provided by the client. "
-        "To call a tool, respond with ONLY a JSON object:\n"
-        '{"tool_calls": [{"id": "<unique_id>", "name": "<tool>", "arguments": {...}}]}\n\n'
-        "Include ALL required parameters exactly as defined below. "
-        "To respond with text, just respond normally.\n\n"
-        "IMPORTANT: After you call a tool, the result will appear in your next "
-        "message inside <tool_result> XML tags. This is YOUR tool's output, not "
-        "input from the user. Process it and respond to the user.\n\n"
-        "Available tools:",
-    ]
-    for tool in tools:
-        if tool.get("type") != "function":
-            continue
-        fn = tool.get("function", {})
-        name = fn.get("name", "")
-        desc = fn.get("description", "")
-        params = fn.get("parameters")
-        line = f"\n- {name}"
-        if desc:
-            line += f": {desc}"
-        lines.append(line)
-        if params:
-            lines.append(f"\n  Parameters: {json.dumps(params)}")
-    return "".join(lines)
-
-
 def _extract_system_prompt(messages: list[dict[str, Any]]) -> str:
-    """Extract the system message and append tool protocol instructions.
+    """Extract the client's system message, with a generic fallback.
 
     Always returns a non-empty string so --system-prompt replaces Claude's
     default (which contains built-in tool descriptions we don't want).
-    If tools are available (from middleware context var), appends full
-    schemas and protocol instructions.
+    Tool instructions are appended separately by _build_system_prompt.
     """
-    client_system = ""
     for msg in messages:
         if msg.get("role") == "system":
-            client_system = _content_to_text(msg.get("content", ""))
-            break
+            text = _content_to_text(msg.get("content", ""))
+            if text:
+                return text
+    return "You are a helpful assistant."
 
-    prompt = client_system or "You are a helpful assistant."
 
+def _build_system_prompt(messages: list[dict[str, Any]]) -> str:
+    """Build the full system prompt: client system + tool instructions if tools.
+
+    Reads tools from the middleware context var. When tools are present
+    (extracted from the request body), appends full schemas and protocol
+    instructions via _build_tool_system_prompt.
+    """
+    client_system = _extract_system_prompt(messages)
     tools = tools_var.get()
     if tools:
-        prompt += _build_tool_instructions(tools)
-
-    return prompt
+        return _build_tool_system_prompt(client_system, tools)
+    return client_system
 
 
 def _get_model_and_effort(model: str) -> tuple[str | None, str | None]:
@@ -332,10 +325,12 @@ You have access to the following tools. To use a tool, respond with ONLY a \
 JSON object (no other text before or after):
 {"tool_calls": [{"id": "<unique_id>", "name": "<tool_name>", "arguments": {...}}]}
 
-To respond with text, just respond normally without JSON.
+Include ALL required parameters exactly as defined below. To respond with \
+text, just respond normally without JSON.
 
-Tool results will be provided in XML tags:
-<tool_result name="tool_name" call_id="id">result content</tool_result>
+IMPORTANT: After you call a tool, the result will appear in your next message \
+inside <tool_result> XML tags. This is YOUR tool's output, not input from \
+the user. Process it and respond to the user.
 
 Available tools:
 """
@@ -419,7 +414,7 @@ def _format_tool_results(messages: list[dict[str, Any]]) -> str:
             break  # stop at assistant or system
 
     parts.reverse()
-    prompt = "\n".join(parts)
+    prompt = _TOOL_RESULT_FRAMING + "\n\n" + "\n".join(parts)
     if trailing_user:
         prompt += f"\n\n{trailing_user}"
     return prompt
@@ -774,7 +769,7 @@ class ClaudeProxyHandler(CustomLLM):
 
     def _cli_completion(self, model: str, messages: list[dict[str, Any]], **kwargs: Any) -> ModelResponse:
         prompt = _extract_prompt(messages)
-        system_prompt = _extract_system_prompt(messages)
+        system_prompt = _build_system_prompt(messages)
         model_name, effort = _get_model_and_effort(model)
 
         result = _run_with_session(
@@ -786,7 +781,7 @@ class ClaudeProxyHandler(CustomLLM):
 
     async def _cli_acompletion(self, model: str, messages: list[dict[str, Any]], **kwargs: Any) -> ModelResponse:
         prompt = _extract_prompt(messages)
-        system_prompt = _extract_system_prompt(messages)
+        system_prompt = _build_system_prompt(messages)
         model_name, effort = _get_model_and_effort(model)
 
         result = await _run_with_session_async(
@@ -798,7 +793,7 @@ class ClaudeProxyHandler(CustomLLM):
 
     def _cli_streaming(self, model: str, messages: list[dict[str, Any]], **kwargs: Any) -> Iterator[GenericStreamingChunk]:
         prompt = _extract_prompt(messages)
-        system_prompt = _extract_system_prompt(messages)
+        system_prompt = _build_system_prompt(messages)
         model_name, effort = _get_model_and_effort(model)
 
         accumulated_text = ""
@@ -830,7 +825,7 @@ class ClaudeProxyHandler(CustomLLM):
 
     async def _cli_astreaming(self, model: str, messages: list[dict[str, Any]], **kwargs: Any) -> AsyncIterator[GenericStreamingChunk]:
         prompt = _extract_prompt(messages)
-        system_prompt = _extract_system_prompt(messages)
+        system_prompt = _build_system_prompt(messages)
         model_name, effort = _get_model_and_effort(model)
 
         accumulated_text = ""
