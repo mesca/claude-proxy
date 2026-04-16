@@ -24,14 +24,9 @@ def build_command(
     append_system_prompt: bool = False,
 ) -> list[str]:
     """Build the claude CLI command arguments."""
-    # Prepend a space if prompt starts with "-" to prevent the CLI
-    # argument parser from interpreting it as a flag.
-    safe_prompt = f" {prompt}" if prompt.startswith("-") else prompt
-
     cmd = [
         CLI_BINARY,
         "-p",
-        safe_prompt,
         "--tools",
         "",
         "--allowedTools",
@@ -57,6 +52,10 @@ def build_command(
 
     if effort:
         cmd.extend(["--effort", effort])
+
+    # "--" ends option parsing; the prompt is a positional argument
+    # and may start with "-" or contain other flag-like patterns.
+    cmd.extend(["--", prompt])
 
     return cmd
 

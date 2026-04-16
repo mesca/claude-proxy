@@ -428,8 +428,8 @@ class TestToolRouting:
 
         # Verify the prompt sent to CLI contains XML-formatted tool results
         cmd = mock_run.call_args[0][0]
-        prompt_idx = cmd.index("-p") + 1
-        prompt = cmd[prompt_idx]
+        # Prompt is the last element, after "--"
+        prompt = cmd[-1]
         assert '<tool_result name="read_file" call_id="call_1">' in prompt
         assert "print('hello world')" in prompt
         assert "</tool_result>" in prompt
