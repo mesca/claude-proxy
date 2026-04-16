@@ -138,15 +138,17 @@ class TestBuildCommandSystemPrompt:
 
 
 class TestExtractSystemPrompt:
-    def test_no_system(self):
-        assert _extract_system_prompt([{"role": "user", "content": "Hi"}]) is None
+    def test_no_system_returns_default(self):
+        result = _extract_system_prompt([{"role": "user", "content": "Hi"}])
+        assert result  # always non-empty
 
     def test_string_content(self):
         msgs = [{"role": "system", "content": "Be helpful"}, {"role": "user", "content": "Hi"}]
         assert _extract_system_prompt(msgs) == "Be helpful"
 
-    def test_empty_content(self):
-        assert _extract_system_prompt([{"role": "system", "content": ""}]) is None
+    def test_empty_content_returns_default(self):
+        result = _extract_system_prompt([{"role": "system", "content": ""}])
+        assert result  # falls back to default
 
 
 # ---------------------------------------------------------------------------
@@ -178,7 +180,7 @@ class TestSystemPromptPassthrough:
         assert cmd[idx + 1] == "Be concise."
 
     @patch("claude_proxy.cli.subprocess.run")
-    def test_no_system_message_no_flag(self, mock_run):
+    def test_no_system_message_uses_default(self, mock_run):
         self._reset()
         mock_run.return_value = _mock_subprocess_run(stdout=_fake_cli_result("Hello!"))
 
@@ -188,5 +190,5 @@ class TestSystemPromptPassthrough:
         )
 
         cmd = mock_run.call_args[0][0]
-        assert "--system-prompt" not in cmd
-        assert "--append-system-prompt" not in cmd
+        # Always replaces default system prompt (even without client system message)
+        assert "--system-prompt" in cmd

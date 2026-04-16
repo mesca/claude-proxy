@@ -56,13 +56,18 @@ def _extract_prompt(messages: list[dict[str, Any]]) -> str:
     raise ClaudeCliError(400, err)
 
 
-def _extract_system_prompt(messages: list[dict[str, Any]]) -> str | None:
-    """Extract the system message content from the message array."""
+def _extract_system_prompt(messages: list[dict[str, Any]]) -> str:
+    """Extract the system message content, defaulting to a minimal prompt.
+
+    Always returns a non-empty string so --system-prompt replaces the default
+    (which contains built-in tool descriptions we don't want).
+    """
     for msg in messages:
         if msg.get("role") == "system":
             text = _content_to_text(msg.get("content", ""))
-            return text or None
-    return None
+            if text:
+                return text
+    return "You are a helpful assistant."
 
 
 def _is_new_conversation(messages: list[dict[str, Any]]) -> bool:
