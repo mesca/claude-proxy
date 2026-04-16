@@ -35,6 +35,9 @@ _WELL_KNOWN_HEADERS = [
 
 _warned_no_header = False
 
+# Per-session locks to serialize concurrent requests for the same session.
+_session_locks: dict[str, asyncio.Lock] = {}
+
 
 class ReasoningContentMiddleware:
     """Moves reasoning_content from provider_specific_fields to delta top level.
@@ -82,11 +85,19 @@ class ToolCallsMiddleware:
             await self.app(scope, receive, send)
             return
 
-        # Extract tools and model from request body (read-only, then replay)
+        # Extract tools from request body (read-only, then replay)
         receive = await _extract_tools_from_request(receive)
 
-        # Set session ID from client header + model (must run after body extraction)
+        # Set session ID from client header (must run after body extraction)
         _detect_session(scope)
+
+        # Serialize concurrent requests for the same session
+        sid = session_var.get()
+        lock = None
+        if sid:
+            if sid not in _session_locks:
+                _session_locks[sid] = asyncio.Lock()
+            lock = _session_locks[sid]
 
         # Buffer all response messages
         buffered: list[dict] = []
@@ -99,7 +110,11 @@ class ToolCallsMiddleware:
             elif message["type"] == "http.response.body":
                 buffered.append(message)
 
-        await self.app(scope, receive, buffering_send)
+        if lock:
+            async with lock:
+                await self.app(scope, receive, buffering_send)
+        else:
+            await self.app(scope, receive, buffering_send)
 
         # Accumulate all content from the buffered body chunks
         all_body = b"".join(m.get("body", b"") for m in buffered)
