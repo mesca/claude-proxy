@@ -1,11 +1,30 @@
-"""Session pool: one long-lived Claude CLI subprocess per session UUID."""
+"""Session pool: one long-lived Claude CLI subprocess per (sid, sysprompt).
+
+The pool is keyed by the user's session UUID combined with a hash of the
+system prompt. Rationale:
+
+- The system prompt defines the "kind" of conversation. OpenCode's title-gen
+  request and the main chat request share a session header but have
+  different system prompts; they must not contaminate each other's
+  conversation history.
+- Everything else — model, effort, tools — is state that may change during
+  a conversation (user switches model mid-chat, server adds/removes a tool).
+  Changes to these respawn the subprocess with --resume so the on-disk
+  history carries over.
+
+Same (sid, sysprompt) across requests → same CLI subprocess → prompt cache
+hits and conversation continuity. Different sysprompt → different session,
+naturally isolated.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import os
 import time
+import uuid
 from typing import Any
 
 from claude_proxy.log import logger
@@ -13,6 +32,14 @@ from claude_proxy.session import Session
 
 IDLE_TIMEOUT_SECONDS = 15 * 60
 REAP_INTERVAL_SECONDS = 60
+
+_INTERNAL_NS = uuid.UUID("b2c3d4e5-f6a7-8901-bcde-f23456789012")
+
+
+def _internal_sid(user_sid: str, system_prompt: str | None) -> str:
+    """sid + sha256(system_prompt) → UUIDv5. Defines CLI session identity."""
+    digest = hashlib.sha256((system_prompt or "").encode()).hexdigest()
+    return str(uuid.uuid5(_INTERNAL_NS, f"{user_sid}|{digest}"))
 
 
 class SessionPool:
@@ -43,21 +70,22 @@ class SessionPool:
 
     async def get_or_create(
         self,
-        sid: str,
+        user_sid: str,
         *,
         model: str | None,
         effort: str | None,
         system_prompt: str | None,
         tools: list[dict[str, Any]] | None,
     ) -> Session:
-        """Return the session for sid, respawning if dead or config changed.
+        """Return the CLI session for (user_sid, system_prompt).
 
-        Concurrent requests on the same sid are serialized by the middleware
-        (per-sid asyncio lock), so this method is only ever called one-at-a-
-        time per sid. Config drift between serialized turns respawns the
-        subprocess; no ephemeral sessions are needed.
+        Model / effort / tools changes respawn the existing session with
+        --resume so conversation history survives. A different system
+        prompt maps to a different internal sid (different on-disk
+        conversation file).
         """
         self._ensure_reaper()
+        sid = _internal_sid(user_sid, system_prompt)
         lock = self._create_locks.setdefault(sid, asyncio.Lock())
         async with lock:
             existing = self._sessions.get(sid)
@@ -67,17 +95,22 @@ class SessionPool:
                     logger.warning("Session {} subprocess is dead, respawning", sid)
                     await existing.close()
                     self._sessions.pop(sid, None)
-                    resume = True  # session file exists on disk
+                    resume = True
                 elif existing.pending_calls:
-                    # A tool cycle is in flight; respawning would orphan the
-                    # pending MCP RPC. Keep the live session regardless of
-                    # config drift — the new model/tools/system prompt will
-                    # take effect on the next turn, not mid-cycle.
+                    # Tool cycle in flight; preserve session regardless of
+                    # model/tools change — new values apply to next turn.
                     return existing
-                elif _config_matches(existing, model, effort, system_prompt, tools):
+                elif (
+                    existing.model == model
+                    and existing.effort == effort
+                    and _tool_names(existing.tools) == _tool_names(tools or [])
+                ):
                     return existing
                 else:
-                    logger.info("Session {} config changed, respawning", sid)
+                    logger.info(
+                        "Session {} model/tools changed, respawning with --resume",
+                        sid,
+                    )
                     await existing.close()
                     self._sessions.pop(sid, None)
                     resume = True
@@ -128,29 +161,12 @@ class SessionPool:
                 await self.drop(sid)
 
 
-def _config_matches(
-    session: Session,
-    model: str | None,
-    effort: str | None,
-    system_prompt: str | None,
-    tools: list[dict[str, Any]] | None,
-) -> bool:
-    return (
-        session.model == model
-        and session.effort == effort
-        and session.system_prompt == system_prompt
-        and _tools_match(session.tools, tools or [])
+def _tool_names(tools: list[dict[str, Any]]) -> list[str]:
+    return sorted(
+        t.get("function", {}).get("name", "")
+        for t in tools
+        if t.get("type") == "function"
     )
-
-
-def _tools_match(a: list[dict[str, Any]], b: list[dict[str, Any]]) -> bool:
-    if len(a) != len(b):
-        return False
-    for x, y in zip(a, b, strict=True):
-        if (x.get("function", {}).get("name") != y.get("function", {}).get("name")
-            or x.get("function", {}).get("parameters") != y.get("function", {}).get("parameters")):
-            return False
-    return True
 
 
 # ---------------------------------------------------------------------------

@@ -249,7 +249,7 @@ class ClaudeProxyHandler(CustomLLM):
             return _completion_from_events(events, model)
         finally:
             if ephemeral:
-                await get_pool().drop(ephemeral)
+                await get_pool().drop(session.sid)
 
     def streaming(  # type: ignore[override]
         self, model: str, messages: list, **kwargs: Any,
@@ -278,7 +278,7 @@ class ClaudeProxyHandler(CustomLLM):
                 yield chunk
         finally:
             if ephemeral:
-                await get_pool().drop(ephemeral)
+                await get_pool().drop(session.sid)
 
     # ------------------------------------------------------------------
 

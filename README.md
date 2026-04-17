@@ -160,7 +160,9 @@ Add this to your `opencode.json` (project root or `~/.config/opencode/opencode.j
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "model": "claude-proxy/claude-sonnet-4-6",
+  "model": "claude-proxy/claude-sonnet-4-7",
+  "small_model": "no/model",
+  "share": "disabled",
   "provider": {
     "claude-proxy": {
       "npm": "@ai-sdk/openai-compatible",

@@ -6,6 +6,7 @@ Tests every feature + the new dead-subprocess recovery path.
 from __future__ import annotations
 
 import concurrent.futures
+import hashlib
 import json
 import os
 import re
@@ -24,6 +25,9 @@ TOOL_MODEL = "claude-sonnet-4-6"  # more reliable tool-calling for E2E assertion
 
 # UUID5 namespace — must match middleware._SESSION_NAMESPACE
 NS = uuid.UUID("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
+# Namespace for internal_sid — must match claude_proxy.pool._INTERNAL_NS
+INTERNAL_NS = uuid.UUID("b2c3d4e5-f6a7-8901-bcde-f23456789012")
+DEFAULT_SYSPROMPT = "You are a helpful assistant."
 
 # Fresh session prefix per test run so we don't resume state from prior runs.
 RUN = str(int(time.time()))
@@ -33,17 +37,20 @@ def H(name: str) -> dict:
     return {"x-session-id": f"{name}-{RUN}"}
 
 
-def sid5(header_value: str) -> str:
-    return str(uuid.uuid5(NS, header_value))
+def internal_sid(header_value: str, system_prompt: str = DEFAULT_SYSPROMPT) -> str:
+    """Match claude_proxy.pool._internal_sid for killing the right subprocess."""
+    user_sid = str(uuid.uuid5(NS, header_value))
+    digest = hashlib.sha256(system_prompt.encode()).hexdigest()
+    return str(uuid.uuid5(INTERNAL_NS, f"{user_sid}|{digest}"))
 
 
-def kill_session_subproc(header_value: str) -> bool:
-    """Kill the CLI subprocess whose --session-id/--resume matches this header."""
-    internal = sid5(header_value)
+def kill_session_subproc(header_value: str, system_prompt: str = DEFAULT_SYSPROMPT) -> bool:
+    """Kill the CLI subprocess whose --session-id/--resume matches this request."""
+    target = internal_sid(header_value, system_prompt)
     pids: list[int] = []
     try:
         out = subprocess.check_output(
-            ["pgrep", "-f", f"claude -p --input-format.*{internal}"],
+            ["pgrep", "-f", f"claude -p --input-format.*{target}"],
             text=True,
         )
         pids = [int(p) for p in out.split()]
@@ -54,7 +61,6 @@ def kill_session_subproc(header_value: str) -> bool:
             os.kill(pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
-    # Wait long enough for the proxy's asyncio loop to notice the SIGCHLD.
     time.sleep(3)
     return bool(pids)
 
@@ -239,10 +245,11 @@ r1 = post("/v1/chat/completions", {
 }, H("T9"))
 if finish(r1) == "tool_calls":
     tcid = tool_calls(r1)[0]["id"]
-    kill_session_subproc(f"T9-{RUN}")
+    kill_session_subproc(f"T9-{RUN}", system_prompt="You MUST call the add tool.")
     r2 = post("/v1/chat/completions", {
         "model": TOOL_MODEL,
         "messages": [
+            {"role": "system", "content": "You MUST call the add tool."},
             {"role": "user", "content": "Use the add tool with a=1 b=1"},
             {"role": "assistant", "tool_calls": [{"id": tcid, "type": "function",
                 "function": {"name": "add", "arguments": '{}'}}]},
@@ -334,6 +341,73 @@ r = post("/v1/chat/completions", {
 }, H("T11"), timeout=30)
 check("RECOVERED" in content(r), "T11 session reusable after disconnect",
       f"got {content(r)[:100]}")
+
+# --- T15: different system prompts on same sid must NOT contaminate ---
+# Session A establishes "my name is Alice" with system prompt SA.
+# Session B (same x-session-affinity, different system prompt) says
+# "my name is Bob". Session A's next turn must still only know Alice.
+print("=== T15 different system prompts don't contaminate ===")
+T15_HEADER = {"x-session-affinity": f"T15-contam-{RUN}"}
+SA = "You are assistant A. Remember the user's name."
+SB = "You are assistant B. Remember the user's name."
+
+r = post("/v1/chat/completions", {
+    "model": MODEL,
+    "messages": [
+        {"role": "system", "content": SA},
+        {"role": "user", "content": "My name is Alice. Reply OK."},
+    ],
+}, T15_HEADER)
+check("OK" in content(r).upper(), "T15a first turn (sysA, Alice)")
+
+r = post("/v1/chat/completions", {
+    "model": MODEL,
+    "messages": [
+        {"role": "system", "content": SB},
+        {"role": "user", "content": "My name is Bob. Reply OK."},
+    ],
+}, T15_HEADER)
+check("OK" in content(r).upper(), "T15b second turn (sysB, Bob)")
+
+# Back to sysA — should only know Alice, not Bob
+r = post("/v1/chat/completions", {
+    "model": MODEL,
+    "messages": [
+        {"role": "system", "content": SA},
+        {"role": "user", "content": "What is my name? One word."},
+    ],
+}, T15_HEADER)
+c = content(r)
+check("Alice" in c and "Bob" not in c,
+      "T15c sysA sees only Alice (no contamination from sysB)",
+      f"got {c[:150]}")
+
+
+# --- T16: model switch mid-conversation preserves history ---
+# User switches model (sonnet → haiku) in the same conversation. System
+# prompt and session header stay the same. The new model must see the
+# prior turn's context (--resume-driven conversation continuity).
+print("=== T16 model switch preserves context ===")
+T16_HEADER = {"x-session-affinity": f"T16-switch-{RUN}"}
+T16_SYS = "You are a helpful assistant."
+post("/v1/chat/completions", {
+    "model": "claude-sonnet-4-6",
+    "messages": [
+        {"role": "system", "content": T16_SYS},
+        {"role": "user", "content": "Remember the word WOMBAT. Reply OK."},
+    ],
+}, T16_HEADER)
+# Same system prompt, same session header — but DIFFERENT model
+r = post("/v1/chat/completions", {
+    "model": "claude-haiku-4-5",
+    "messages": [
+        {"role": "system", "content": T16_SYS},
+        {"role": "user", "content": "What word did I ask you to remember? One word only."},
+    ],
+}, T16_HEADER)
+c = content(r)
+check("WOMBAT" in c, "T16 history survives model switch", f"got {c[:100]}")
+
 
 # --- T14: concurrent requests with DIFFERENT configs on the same session ---
 # OpenCode fires a haiku "title-gen" and a sonnet chat request in parallel,

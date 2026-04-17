@@ -1,61 +1,53 @@
-"""Unit tests for SessionPool config/tool matching."""
+"""Unit tests for SessionPool internal-sid derivation."""
 
 from __future__ import annotations
 
-from claude_proxy.pool import _config_matches, _tools_match
-from claude_proxy.session import Session
+from claude_proxy.pool import _internal_sid, _tool_names
 
 
-def _make_session(
-    *, model=None, effort=None, system_prompt=None, tools=None,
-) -> Session:
-    s = Session.__new__(Session)
-    s.model = model
-    s.effort = effort
-    s.system_prompt = system_prompt
-    s.tools = tools or []
-    return s
+def test_internal_sid_stable():
+    a = _internal_sid("u1", "hello")
+    b = _internal_sid("u1", "hello")
+    assert a == b
 
 
-def test_config_matches_identity():
-    s = _make_session(model="sonnet", system_prompt="hi", tools=[])
-    assert _config_matches(s, "sonnet", None, "hi", [])
+def test_internal_sid_different_user():
+    a = _internal_sid("u1", "S")
+    b = _internal_sid("u2", "S")
+    assert a != b
 
 
-def test_config_matches_model_differs():
-    s = _make_session(model="sonnet")
-    assert not _config_matches(s, "haiku", None, None, [])
+def test_internal_sid_different_sysprompt():
+    a = _internal_sid("u1", "A")
+    b = _internal_sid("u1", "B")
+    assert a != b
 
 
-def test_config_matches_system_prompt_differs():
-    s = _make_session(system_prompt="A")
-    assert not _config_matches(s, None, None, "B", [])
+def test_internal_sid_ignores_model():
+    # Model is not part of the identity — it's spawn-time state only.
+    # Same sysprompt with different models must map to the same session.
+    a = _internal_sid("u1", "S")
+    b = _internal_sid("u1", "S")
+    assert a == b
 
 
-def test_tools_match_empty():
-    assert _tools_match([], [])
+def test_internal_sid_none_sysprompt():
+    a = _internal_sid("u1", None)
+    b = _internal_sid("u1", "")
+    assert a == b  # None and empty treated the same
 
 
-def test_tools_match_same_name():
-    a = [{"function": {"name": "read", "parameters": {}}}]
-    b = [{"function": {"name": "read", "parameters": {}}}]
-    assert _tools_match(a, b)
+def test_tool_names_sorted():
+    tools = [
+        {"type": "function", "function": {"name": "write"}},
+        {"type": "function", "function": {"name": "read"}},
+    ]
+    assert _tool_names(tools) == ["read", "write"]
 
 
-def test_tools_match_different_names():
-    a = [{"function": {"name": "read"}}]
-    b = [{"function": {"name": "write"}}]
-    assert not _tools_match(a, b)
-
-
-def test_tools_match_different_schemas():
-    a = [{"function": {"name": "read", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}}}}]
-    b = [{"function": {"name": "read", "parameters": {"type": "object", "properties": {}}}}]
-    assert not _tools_match(a, b)
-
-
-def test_tools_match_different_length():
-    assert not _tools_match(
-        [{"function": {"name": "a"}}],
-        [{"function": {"name": "a"}}, {"function": {"name": "b"}}],
-    )
+def test_tool_names_skips_non_function():
+    tools = [
+        {"type": "function", "function": {"name": "a"}},
+        {"type": "other"},
+    ]
+    assert _tool_names(tools) == ["a"]
