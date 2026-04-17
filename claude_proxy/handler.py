@@ -131,8 +131,8 @@ def _completion_from_events(
         elif evt.kind == "end":
             usage = evt.usage or usage
         elif evt.kind == "error":
-            err = f"CLI error: {evt.message}"
-            raise RuntimeError(err)
+            logger.warning("Upstream CLI error: {}", evt.message)
+            text_parts.append(_format_upstream_error(evt.message))
 
     if tool_calls:
         tc_objects = [
@@ -328,8 +328,30 @@ class ClaudeProxyHandler(CustomLLM):
                 yield _end_chunk(evt.usage)
                 return
             elif evt.kind == "error":
-                err = f"CLI error: {evt.message}"
-                raise RuntimeError(err)
+                # Surface the upstream error as assistant text + clean stream
+                # close. Raising here would trigger LiteLLM's mid-stream
+                # fallback machinery and dump a traceback for what are often
+                # user-actionable errors (quota exhausted, rate limit, etc).
+                logger.warning("Upstream CLI error: {}", evt.message)
+                yield _text_chunk(_format_upstream_error(evt.message))
+                yield _end_chunk(None)
+                return
+
+
+def _format_upstream_error(raw: str) -> str:
+    """Turn the CLI's error string into a single human-readable line."""
+    # CLI wraps Anthropic errors as: "API Error: <status> {json...}"
+    if "API Error" in raw and "{" in raw:
+        brace = raw.index("{")
+        try:
+            payload = json.loads(raw[brace:])
+            err = payload.get("error") or {}
+            msg = err.get("message")
+            if msg:
+                return f"[proxy] upstream error: {msg}"
+        except (json.JSONDecodeError, KeyError):
+            pass
+    return f"[proxy] upstream error: {raw}"
 
 
 handler = ClaudeProxyHandler()
