@@ -90,9 +90,9 @@ claude-proxy list-models                    # show models
 
 | Model name | Effort |
 |---|---|
-| `claude-opus-4-6` | default |
-| `claude-opus-4-6-high` | high |
-| `claude-opus-4-6-max` | max (extended thinking) |
+| `claude-opus-4-7` | default |
+| `claude-opus-4-7-high` | high |
+| `claude-opus-4-7-max` | max (extended thinking) |
 | `claude-sonnet-4-6` | default |
 | `claude-sonnet-4-6-high` | high |
 | `claude-sonnet-4-6-max` | max (extended thinking) |
@@ -175,9 +175,9 @@ Add this to your `opencode.json` (project root or `~/.config/opencode/opencode.j
         "apiKey": "not-needed"
       },
       "models": {
-        "claude-opus-4-6": { "name": "Claude Opus 4.6" },
-        "claude-opus-4-6-high": { "name": "Claude Opus 4.6 (high effort)" },
-        "claude-opus-4-6-max": { "name": "Claude Opus 4.6 (max effort)" },
+        "claude-opus-4-7": { "name": "Claude Opus 4.7" },
+        "claude-opus-4-7-high": { "name": "Claude Opus 4.7 (high effort)" },
+        "claude-opus-4-7-max": { "name": "Claude Opus 4.7 (max effort)" },
         "claude-sonnet-4-6": { "name": "Claude Sonnet 4.6" },
         "claude-sonnet-4-6-high": { "name": "Claude Sonnet 4.6 (high effort)" },
         "claude-sonnet-4-6-max": { "name": "Claude Sonnet 4.6 (max effort)" },
@@ -290,7 +290,7 @@ When new Claude models become available, edit `MODELS` in `claude_proxy/models.p
 
 ```python
 MODELS = [
-    {"alias": "opus", "name": "claude-opus-4-6"},
+    {"alias": "opus", "name": "claude-opus-4-7"},
     {"alias": "sonnet", "name": "claude-sonnet-4-6"},
     {"alias": "haiku", "name": "claude-haiku-4-5"},
 ]

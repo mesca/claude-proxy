@@ -10,7 +10,7 @@ PROVIDER = "claude-proxy"
 
 # Claude CLI model aliases → display names
 MODELS = [
-    {"alias": "opus", "name": "claude-opus-4-6"},
+    {"alias": "opus", "name": "claude-opus-4-7"},
     {"alias": "sonnet", "name": "claude-sonnet-4-6"},
     {"alias": "haiku", "name": "claude-haiku-4-5"},
 ]
