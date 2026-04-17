@@ -153,6 +153,8 @@ def _detect_session(scope: dict) -> None:
 
 
 def _transform_sse_body(body: bytes) -> bytes:
+    if b"provider_specific_fields" not in body:
+        return body  # no reasoning_content to flatten — skip decode/parse
     text = body.decode("utf-8", errors="replace")
     lines = text.split("\n")
     out: list[str] = []

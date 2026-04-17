@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from typing import Any
@@ -107,20 +106,25 @@ def _trailing_tool_results(messages: list[dict[str, Any]]) -> dict[str, str] | N
 # ---------------------------------------------------------------------------
 
 
+def _usage_block(usage: dict[str, int] | None) -> dict[str, int] | None:
+    if not usage:
+        return None
+    inp = usage["input_tokens"]
+    out = usage["output_tokens"]
+    return {"prompt_tokens": inp, "completion_tokens": out, "total_tokens": inp + out}
+
+
 def _completion_from_events(
     events: list[TurnEvent],
     model: str,
 ) -> ModelResponse:
     text_parts: list[str] = []
-    thinking_parts: list[str] = []
     tool_calls: list[ToolCall] = []
-    usage = {"input_tokens": 0, "output_tokens": 0}
+    usage: dict[str, int] = {"input_tokens": 0, "output_tokens": 0}
 
     for evt in events:
         if evt.kind == "text":
             text_parts.append(evt.delta)
-        elif evt.kind == "thinking":
-            thinking_parts.append(evt.delta)
         elif evt.kind == "tool_calls":
             tool_calls = evt.calls
         elif evt.kind == "end":
@@ -132,12 +136,8 @@ def _completion_from_events(
     if tool_calls:
         tc_objects = [
             ChatCompletionMessageToolCall(
-                id=call.call_id,
-                type="function",
-                function=Function(
-                    name=call.name,
-                    arguments=json.dumps(call.arguments),
-                ),
+                id=call.call_id, type="function",
+                function=Function(name=call.name, arguments=json.dumps(call.arguments)),
             )
             for call in tool_calls
         ]
@@ -158,56 +158,36 @@ def _completion_from_events(
     )
 
 
-def _text_chunk(text: str, thinking: str | None = None) -> GenericStreamingChunk:
-    provider_fields = {"reasoning_content": thinking} if thinking else None
-    return {  # type: ignore[return-value]
-        "text": text,
-        "is_finished": False,
-        "finish_reason": None,
-        "index": 0,
-        "tool_use": None,
-        "usage": None,
-        "provider_specific_fields": provider_fields,
+def _chunk(**overrides: Any) -> GenericStreamingChunk:
+    base: dict[str, Any] = {
+        "text": "", "is_finished": False, "finish_reason": None, "index": 0,
+        "tool_use": None, "usage": None, "provider_specific_fields": None,
     }
+    base.update(overrides)
+    return base  # type: ignore[return-value]
+
+
+def _text_chunk(text: str, thinking: str | None = None) -> GenericStreamingChunk:
+    psf = {"reasoning_content": thinking} if thinking else None
+    return _chunk(text=text, provider_specific_fields=psf)
 
 
 def _tool_calls_chunk(calls: list[ToolCall]) -> GenericStreamingChunk:
-    # LiteLLM's GenericStreamingChunk only carries one tool_use field;
-    # LiteLLM assembles the rest from the accompanying non-streaming plumbing.
+    # LiteLLM's chunk carries only one tool_use; it assembles the rest.
     tc = calls[0]
-    return {  # type: ignore[return-value]
-        "text": "",
-        "is_finished": True,
-        "finish_reason": "tool_calls",
-        "index": 0,
-        "tool_use": {
-            "id": tc.call_id,
-            "type": "function",
+    return _chunk(
+        is_finished=True,
+        finish_reason="tool_calls",
+        tool_use={
+            "id": tc.call_id, "type": "function",
             "function": {"name": tc.name, "arguments": json.dumps(tc.arguments)},
             "index": 0,
         },
-        "usage": None,
-        "provider_specific_fields": None,
-    }
+    )
 
 
 def _end_chunk(usage: dict[str, int] | None) -> GenericStreamingChunk:
-    usage_block = None
-    if usage:
-        usage_block = {
-            "prompt_tokens": usage["input_tokens"],
-            "completion_tokens": usage["output_tokens"],
-            "total_tokens": usage["input_tokens"] + usage["output_tokens"],
-        }
-    return {  # type: ignore[return-value]
-        "text": "",
-        "is_finished": True,
-        "finish_reason": "stop",
-        "index": 0,
-        "tool_use": None,
-        "usage": usage_block,
-        "provider_specific_fields": None,
-    }
+    return _chunk(is_finished=True, finish_reason="stop", usage=_usage_block(usage))
 
 
 # ---------------------------------------------------------------------------
@@ -219,10 +199,6 @@ def _get_tools(kwargs: dict[str, Any]) -> list[dict[str, Any]] | None:
     # LiteLLM strips tools from custom handlers; fall back to the middleware cv.
     optional = kwargs.get("optional_params") or {}
     return optional.get("tools") or tools_var.get()
-
-
-def _is_stateless() -> bool:
-    return os.environ.get("CLAUDE_PROXY_STATELESS") == "1" or session_var.get() is None
 
 
 async def _resolve_session(

@@ -35,10 +35,7 @@ async def mcp_endpoint(request: Request) -> Response:
         return Response(status_code=202)
 
     if isinstance(body, list):
-        # Batch not expected from the CLI, but reply with an error per spec
-        return JSONResponse(
-            {"jsonrpc": "2.0", "error": {"code": -32600, "message": "batch not supported"}, "id": None},
-        )
+        return _err(None, -32600, "batch not supported")
 
     method = body.get("method")
     req_id = body.get("id")

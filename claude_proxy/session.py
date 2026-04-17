@@ -9,6 +9,7 @@ Session methods to coordinate tool calls.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import time
 import uuid
@@ -145,11 +146,9 @@ class Session:
             if not call.future.done():
                 call.future.set_exception(RuntimeError("session closed"))
         self.pending_calls.clear()
-        try:
+        with contextlib.suppress(Exception):
             if proc.stdin and not proc.stdin.is_closing():
                 proc.stdin.close()
-        except Exception:  # noqa: BLE001,S110
-            pass
         try:
             await asyncio.wait_for(proc.wait(), timeout=5)
         except TimeoutError:
@@ -181,7 +180,7 @@ class Session:
 
     async def _pump_stderr(self) -> None:
         assert self._proc is not None and self._proc.stderr is not None  # noqa: S101
-        try:
+        with contextlib.suppress(Exception):
             while True:
                 line = await self._proc.stderr.readline()
                 if not line:
@@ -189,8 +188,6 @@ class Session:
                 text = line.decode(errors="replace").rstrip()
                 if text:
                     logger.debug("[cli stderr sid={}] {}", self.sid, text)
-        except Exception:  # noqa: BLE001,S110
-            pass
 
     # ------------------------------------------------------------------
     # MCP bridge integration (called from bridge handlers)

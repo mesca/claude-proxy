@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import time
 from typing import Any
 
@@ -27,7 +28,6 @@ class SessionPool:
         self._sessions: dict[str, Session] = {}
         self._create_locks: dict[str, asyncio.Lock] = {}
         self._reaper_task: asyncio.Task[None] | None = None
-        self._shutdown = False
 
     def _ensure_reaper(self) -> None:
         """Start the reaper task lazily from an async context."""
@@ -37,14 +37,6 @@ class SessionPool:
             self._reaper_task = asyncio.create_task(
                 self._reaper_loop(), name="session-reaper",
             )
-
-    async def shutdown(self) -> None:
-        self._shutdown = True
-        if self._reaper_task:
-            self._reaper_task.cancel()
-        for session in list(self._sessions.values()):
-            await session.close()
-        self._sessions.clear()
 
     def get(self, sid: str) -> Session | None:
         return self._sessions.get(sid)
@@ -84,11 +76,12 @@ class SessionPool:
 
     async def drop(self, sid: str) -> None:
         session = self._sessions.pop(sid, None)
+        self._create_locks.pop(sid, None)
         if session:
             await session.close()
 
     async def _reaper_loop(self) -> None:
-        while not self._shutdown:
+        while True:
             try:
                 await asyncio.sleep(REAP_INTERVAL_SECONDS)
             except asyncio.CancelledError:
@@ -138,7 +131,6 @@ _pool: SessionPool | None = None
 def get_pool() -> SessionPool:
     global _pool  # noqa: PLW0603
     if _pool is None:
-        import os
         bridge_url = os.environ.get("CLAUDE_PROXY_BRIDGE_URL")
         if not bridge_url:
             err = "CLAUDE_PROXY_BRIDGE_URL not set — proxy must run via __main__"
