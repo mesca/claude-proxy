@@ -81,13 +81,21 @@ def main() -> None:
         "--port", str(args.port),
     ]
 
-    # Add middleware
+    # Add middleware + mount MCP bridge
     from litellm.proxy.proxy_server import app  # type: ignore[import-untyped]
 
-    from claude_proxy.middleware import ReasoningContentMiddleware, ToolCallsMiddleware
+    from claude_proxy.bridge import router as bridge_router
+    from claude_proxy.middleware import (
+        ReasoningContentMiddleware,
+        RequestContextMiddleware,
+    )
 
+    app.include_router(bridge_router)
     app.add_middleware(ReasoningContentMiddleware)
-    app.add_middleware(ToolCallsMiddleware)
+    app.add_middleware(RequestContextMiddleware)
+
+    # Published to the pool via env var (lazy init: first request creates the pool)
+    os.environ["CLAUDE_PROXY_BRIDGE_URL"] = f"http://{args.host}:{args.port}/_mcp"
 
     from litellm.proxy.proxy_cli import run_server  # type: ignore[import-untyped]
 

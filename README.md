@@ -103,19 +103,26 @@ Extended thinking content is sent as `reasoning_content` in SSE chunks.
 
 ## Sessions
 
-The proxy maintains Claude CLI sessions across requests for conversation continuity and prompt caching (up to 90% cost savings on repeated context).
+The proxy maintains one long-lived Claude CLI subprocess per session for conversation continuity, low latency, and prompt caching (up to 90% cost savings on repeated context).
 
-A session header is auto-discovered from each request. A deterministic UUID is derived from the header value and used to resume the CLI session via `--resume`. No server-side state — sessions are persisted to disk by the CLI and survive proxy restarts.
+A session header is auto-discovered from each request. A deterministic UUID is derived from the header value and used as the subprocess's `--session-id`. User messages are streamed into the subprocess's stdin; assistant output streams back on stdout. Idle subprocesses are reaped after 15 minutes of inactivity.
 
 Well-known headers (checked in order): `x-session-affinity` (OpenCode), `x-session-id`, `x-conversation-id`. Use `--session-header` to override. If no header is found, the proxy falls back to stateless mode with a warning.
 
-In stateless mode (`--stateless`), sessions are disabled and the full conversation history is formatted and sent as the prompt each turn. Context is preserved, but there is no prompt caching across turns.
+In stateless mode (`--stateless` or when no session header is present), an ephemeral subprocess is spawned per request with the full conversation history formatted as the prompt. Context is preserved within a single HTTP request, but there is no prompt caching across turns, and **tool use is not supported** in stateless mode (tool cycles require session state across requests).
 
 ## Tools
 
 The proxy supports the OpenAI tool calling protocol. Neither the proxy nor Claude execute tools — all tool execution happens on the **client side** (e.g. OpenCode).
 
-When Claude responds with a `{"tool_calls": ...}` JSON object, the proxy rewrites it into a proper OpenAI `tool_calls` response with `finish_reason: "tool_calls"`. The client executes the tools and sends results back as `tool` role messages. No configuration required.
+Tools flow through the Claude CLI's native tool protocol via an in-process MCP bridge mounted at `/_mcp`:
+
+- The client's `tools` list is published to the bridge
+- Claude invokes tools through standard `tool_use` content blocks
+- The bridge parks each call until the client returns the matching `tool` message in a subsequent request
+- The result returns to Claude as a native `tool_result` block
+
+No JSON is injected into prompts. No response parsing. Sessions are required for tool use — tool cycles span multiple HTTP requests.
 
 ## System prompt
 
@@ -205,12 +212,16 @@ flowchart TB
 
     subgraph proxy ["claude-proxy"]
         direction TB
-        MW["ASGI Middleware\n• tool_calls rewriting\n• reasoning_content flattening"]
+        MW["ASGI Middleware\n• request context extraction\n• reasoning_content flattening"]
         LiteLLM["LiteLLM Router"]
-        Handler["Handler\n• prompt extraction\n• session management"]
-        CLI["claude -p ··· --resume ‹uuid›"]
+        Handler["Handler\n• session dispatch\n• event → OpenAI translation"]
+        Pool["SessionPool\n• sid → Session\n• idle reaping"]
+        Bridge["MCP Bridge (/_mcp)\n• tools/list, tools/call\n• parks calls in Session futures"]
+        CLI["claude -p --input-format stream-json\n--session-id ‹uuid› --mcp-config ‹bridge›\n(one long-lived subprocess per session)"]
 
-        MW --> LiteLLM --> Handler --> CLI
+        MW --> LiteLLM --> Handler --> Pool --> CLI
+        CLI <-.-> Bridge
+        Bridge --> Handler
     end
 
     Claude(["Claude"])
@@ -223,14 +234,17 @@ flowchart TB
     style Claude fill:#fce4ec,stroke:#c62828
 ```
 
-Claude is sandboxed as a pure LLM — all built-in tools, skills, and MCP servers are disabled:
+Claude is sandboxed as a pure LLM — all built-in tools, skills and user MCP servers are disabled; the only MCP server exposed is the proxy's own bridge:
 
 | Flag | Purpose |
 |---|---|
-| `--tools ""` | Remove built-in tool descriptions from prompt |
-| `--allowedTools ""` | Block execution of any remaining tools |
+| `--tools ""` | Remove built-in tool descriptions from the API tools list |
+| `--allowedTools "mcp__proxy"` | Only the proxy bridge's tools may execute |
 | `--disable-slash-commands` | Disable all skills |
-| `--strict-mcp-config` | Disable all MCP servers |
+| `--strict-mcp-config` | Ignore all user MCP configs; only `--mcp-config` applies |
+| `--mcp-config` | Register the in-process bridge at `/_mcp` |
+| `--input-format stream-json` | Feed structured user/tool messages over stdin |
+| `--session-id` | Persistent session UUID across turns in the same process |
 | `--system-prompt` | Replace default system prompt with client's |
 
 ## Development

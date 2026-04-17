@@ -1,12 +1,17 @@
-"""Custom LLM handler that routes requests to the claude CLI.
+"""Custom LLM handler that routes requests through the SessionPool.
 
-Tool-free requests go through the CLI with --resume for session continuity.
-Tool-using requests add tool definitions to the system prompt and parse
-Claude's response for structured tool_calls JSON.
+Tools are handled natively via MCP (see bridge.py, session.py): tool
+definitions, calls and results all flow through the Claude CLI's native
+tool protocol, not through prompt injection.
+
+A request with a session UUID uses a long-lived Claude subprocess. A
+request without one runs in a degraded stateless mode: a short-lived
+session per request, with no tool support.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import uuid
@@ -24,112 +29,24 @@ from litellm.types.utils import (
     Usage,
 )
 
-from claude_proxy import cli
-from claude_proxy.cli import ClaudeCliError
 from claude_proxy.log import logger
 from claude_proxy.middleware import session_var, tools_var
 from claude_proxy.models import parse_model_string
+from claude_proxy.pool import get_pool
+from claude_proxy.session import Session, ToolCall, TurnEvent
 
 # ---------------------------------------------------------------------------
-# Helpers shared by both paths
+# Message extraction helpers
 # ---------------------------------------------------------------------------
 
 
 def _content_to_text(content: str | list[dict[str, Any]] | None) -> str:
-    """Extract text from OpenAI content (string or content-block list)."""
     if isinstance(content, list):
-        parts: list[str] = [
-            b.get("text", "") for b in content if b.get("type") == "text"
-        ]
-        return "".join(parts)
+        return "".join(b.get("text", "") for b in content if b.get("type") == "text")
     return str(content) if content else ""
 
 
-_TOOL_RESULT_FRAMING = (
-    "[SYSTEM NOTE: The following are results from tool calls YOU made in "
-    "the previous turn. They are not user input. Use them to continue "
-    "answering the user's original request.]"
-)
-
-
-def _format_history(messages: list[dict[str, Any]]) -> str:
-    """Format the full message history as a single prompt (stateless mode).
-
-    Reproduces OpenAI multi-turn behavior: each message is labeled with its
-    role so Claude can follow the conversation without --resume.
-    The framing note is prepended before each consecutive group of tool results.
-    """
-    # Build a map of tool_call_id → tool name from assistant messages
-    call_id_to_name: dict[str, str] = {}
-    for msg in messages:
-        if msg.get("role") == "assistant":
-            for tc in msg.get("tool_calls") or []:
-                tc_id = tc.get("id", "")
-                fn = tc.get("function", {})
-                if tc_id and fn.get("name"):
-                    call_id_to_name[tc_id] = fn["name"]
-
-    parts: list[str] = []
-    prev_was_tool = False
-    for msg in messages:
-        role = msg.get("role")
-        if role == "system":
-            continue  # handled separately via --system-prompt
-        content = _content_to_text(msg.get("content", ""))
-        if role == "user":
-            parts.append(f"[user]\n{content}")
-            prev_was_tool = False
-        elif role == "assistant":
-            tool_calls = msg.get("tool_calls")
-            if tool_calls:
-                tc_json = json.dumps(tool_calls, indent=2)
-                if content:
-                    parts.append(f"[assistant]\n{content}\n{tc_json}")
-                else:
-                    parts.append(f"[assistant]\n{tc_json}")
-            elif content:
-                parts.append(f"[assistant]\n{content}")
-            prev_was_tool = False
-        elif role == "tool":
-            call_id = msg.get("tool_call_id", "")
-            name = msg.get("name") or call_id_to_name.get(call_id, "tool")
-            block = (
-                f'<tool_result name="{name}" call_id="{call_id}">\n'
-                f"{content}\n"
-                f"</tool_result>"
-            )
-            if not prev_was_tool:
-                parts.append(f"{_TOOL_RESULT_FRAMING}\n{block}")
-            else:
-                parts.append(block)
-            prev_was_tool = True
-    return "\n\n".join(parts)
-
-
-def _extract_prompt(messages: list[dict[str, Any]]) -> str:
-    """Extract the prompt to send to Claude.
-
-    In stateless mode: format the full message history.
-    In session mode: return the last user message or tool results.
-    """
-    if os.environ.get("CLAUDE_PROXY_STATELESS") == "1":
-        return _format_history(messages)
-    if _is_tool_result_turn(messages):
-        return _format_tool_results(messages)
-    for msg in reversed(messages):
-        if msg.get("role") == "user":
-            return _content_to_text(msg.get("content", ""))
-    err = "No user message found in the request"
-    raise ClaudeCliError(400, err)
-
-
 def _extract_system_prompt(messages: list[dict[str, Any]]) -> str:
-    """Extract the client's system message, with a generic fallback.
-
-    Always returns a non-empty string so --system-prompt replaces Claude's
-    default (which contains built-in tool descriptions we don't want).
-    Tool instructions are appended separately by _build_system_prompt.
-    """
     for msg in messages:
         if msg.get("role") == "system":
             text = _content_to_text(msg.get("content", ""))
@@ -138,413 +55,135 @@ def _extract_system_prompt(messages: list[dict[str, Any]]) -> str:
     return "You are a helpful assistant."
 
 
-def _build_system_prompt(messages: list[dict[str, Any]]) -> str:
-    """Build the full system prompt: client system + tool instructions if tools.
+def _last_user_text(messages: list[dict[str, Any]]) -> str:
+    for msg in reversed(messages):
+        if msg.get("role") == "user":
+            return _content_to_text(msg.get("content", ""))
+    err = "No user message found in the request"
+    raise ValueError(err)
 
-    Reads tools from the middleware context var. When tools are present
-    (extracted from the request body), appends full schemas and protocol
-    instructions via _build_tool_system_prompt.
+
+def _format_history_as_prompt(messages: list[dict[str, Any]]) -> str:
+    """Serialize the full conversation as a labeled prompt (stateless mode).
+
+    Skips system messages (carried via --system-prompt). Used when no session
+    header is present: the ephemeral Session has no prior memory, so the full
+    history must be re-sent with each request.
     """
-    client_system = _extract_system_prompt(messages)
-    tools = tools_var.get()
-    if tools:
-        return _build_tool_system_prompt(client_system, tools)
-    return client_system
-
-
-def _get_model_and_effort(model: str) -> tuple[str | None, str | None]:
-    return parse_model_string(model)
-
-
-def _get_session_id() -> str | None:
-    """Read session ID from context var (set by middleware)."""
-    return session_var.get()
-
-
-def _is_session_error(e: ClaudeCliError) -> bool:
-    """Check if a CLI error is session-related (not found or already in use)."""
-    msg = e.message.lower()
-    return "session" in msg or "conversation" in msg
-
-
-def _run_with_session(
-    prompt: str,
-    *,
-    model: str | None = None,
-    effort: str | None = None,
-    system_prompt: str | None = None,
-    timeout: float | None = None,
-) -> dict[str, Any]:
-    """Run CLI with session retry: --resume → --session-id → no session."""
-    sid = _get_session_id()
-    kw = {"model": model, "effort": effort, "system_prompt": system_prompt, "timeout": timeout}
-
-    if not sid:
-        return cli.run_sync(prompt, **kw)
-
-    # Try resume existing session
-    try:
-        return cli.run_sync(prompt, session_id=sid, **kw)
-    except ClaudeCliError as e:
-        if not _is_session_error(e):
-            raise
-        logger.info("Session --resume failed, trying --session-id: {}", sid)
-
-    # Try create new session with our UUID
-    try:
-        return cli.run_sync(prompt, session_id=sid, create_session=True, **kw)
-    except ClaudeCliError as e:
-        if not _is_session_error(e):
-            raise
-        logger.warning("Session --session-id also failed, running without session: {}", sid)
-
-    # Fall back to no session
-    return cli.run_sync(prompt, **kw)
-
-
-async def _run_with_session_async(
-    prompt: str,
-    *,
-    model: str | None = None,
-    effort: str | None = None,
-    system_prompt: str | None = None,
-    timeout: float | None = None,
-) -> dict[str, Any]:
-    """Async version of _run_with_session."""
-    sid = _get_session_id()
-    kw = {"model": model, "effort": effort, "system_prompt": system_prompt, "timeout": timeout}
-
-    if not sid:
-        return await cli.run_async(prompt, **kw)
-
-    try:
-        return await cli.run_async(prompt, session_id=sid, **kw)
-    except ClaudeCliError as e:
-        if not _is_session_error(e):
-            raise
-        logger.info("Session --resume failed, trying --session-id: {}", sid)
-
-    try:
-        return await cli.run_async(prompt, session_id=sid, create_session=True, **kw)
-    except ClaudeCliError as e:
-        if not _is_session_error(e):
-            raise
-        logger.warning("Session --session-id also failed, running without session: {}", sid)
-
-    return await cli.run_async(prompt, **kw)
-
-
-def _stream_with_session(
-    prompt: str,
-    *,
-    model: str | None = None,
-    effort: str | None = None,
-    system_prompt: str | None = None,
-) -> Iterator[dict[str, Any]]:
-    """Stream CLI with session retry: --resume → --session-id → no session."""
-    sid = _get_session_id()
-    kw = {"model": model, "effort": effort, "system_prompt": system_prompt}
-
-    if not sid:
-        yield from cli.stream_sync(prompt, **kw)
-        return
-
-    try:
-        yield from cli.stream_sync(prompt, session_id=sid, **kw)
-        return
-    except ClaudeCliError as e:
-        if not _is_session_error(e):
-            raise
-        logger.info("Session --resume failed, trying --session-id: {}", sid)
-
-    try:
-        yield from cli.stream_sync(prompt, session_id=sid, create_session=True, **kw)
-        return
-    except ClaudeCliError as e:
-        if not _is_session_error(e):
-            raise
-        logger.warning("Session --session-id also failed, running without session: {}", sid)
-
-    yield from cli.stream_sync(prompt, **kw)
-
-
-async def _stream_with_session_async(
-    prompt: str,
-    *,
-    model: str | None = None,
-    effort: str | None = None,
-    system_prompt: str | None = None,
-) -> AsyncIterator[dict[str, Any]]:
-    """Async stream CLI with session retry: --resume → --session-id → no session."""
-    sid = _get_session_id()
-    kw = {"model": model, "effort": effort, "system_prompt": system_prompt}
-
-    if not sid:
-        logger.debug("No session, running stateless")
-        async for event in cli.stream_async(prompt, **kw):
-            yield event
-        return
-
-    try:
-        logger.debug("Trying --resume {}", sid)
-        async for event in cli.stream_async(prompt, session_id=sid, **kw):
-            yield event
-        return
-    except ClaudeCliError as e:
-        if not _is_session_error(e):
-            raise
-        logger.info("--resume failed ({}), trying --session-id", e.message[:80])
-
-    try:
-        logger.debug("Trying --session-id {}", sid)
-        async for event in cli.stream_async(prompt, session_id=sid, create_session=True, **kw):
-            yield event
-        return
-    except ClaudeCliError as e:
-        if not _is_session_error(e):
-            raise
-        logger.warning("--session-id also failed ({}), running without session", e.message[:80])
-
-    async for event in cli.stream_async(prompt, **kw):
-        yield event
-
-
-def _get_tools(kwargs: dict[str, Any]) -> list[dict[str, Any]] | None:
-    """Extract tool definitions from optional_params. Returns None if absent."""
-    optional_params = kwargs.get("optional_params", {})
-    tools = optional_params.get("tools")
-    return tools if tools else None
-
-
-# ---------------------------------------------------------------------------
-# Tool protocol: system prompt, prompt formatting, response parsing
-# ---------------------------------------------------------------------------
-
-_TOOL_INSTRUCTIONS = """\
-You have access to the following tools. To use a tool, respond with ONLY a \
-JSON object (no other text before or after):
-{"tool_calls": [{"id": "<unique_id>", "name": "<tool_name>", "arguments": {...}}]}
-
-Include ALL required parameters exactly as defined below. To respond with \
-text, just respond normally without JSON.
-
-IMPORTANT: After you call a tool, the result will appear in your next message \
-inside <tool_result> XML tags. This is YOUR tool's output, not input from \
-the user. Process it and respond to the user.
-
-Available tools:
-"""
-
-
-def _build_tool_system_prompt(
-    client_system: str | None,
-    tools: list[dict[str, Any]],
-) -> str:
-    """Build a system prompt that includes tool definitions."""
     parts: list[str] = []
-    if client_system:
-        parts.append(client_system)
-        parts.append("")  # blank line separator
-
-    parts.append(_TOOL_INSTRUCTIONS)
-    for tool in tools:
-        if tool.get("type") != "function":
+    for msg in messages:
+        role = msg.get("role")
+        if role == "system":
             continue
-        fn = tool["function"]
-        name = fn.get("name", "unknown")
-        desc = fn.get("description", "")
-        params = fn.get("parameters", {})
-        line = f"- {name}"
-        if desc:
-            line += f": {desc}"
-        parts.append(line)
-        if params:
-            parts.append(f"  Parameters: {json.dumps(params)}")
-
-    return "\n".join(parts)
+        text = _content_to_text(msg.get("content", ""))
+        if role == "user":
+            parts.append(f"[user]\n{text}")
+        elif role == "assistant" and text:
+            parts.append(f"[assistant]\n{text}")
+    return "\n\n".join(parts) or _last_user_text(messages)
 
 
-def _is_tool_result_turn(messages: list[dict[str, Any]]) -> bool:
-    """Detect a tool-result turn: at least one tool message after the last assistant."""
-    # Walk backwards; if we hit a tool message before a user message, it's a tool result turn
+def _trailing_tool_results(messages: list[dict[str, Any]]) -> dict[str, str] | None:
+    """If the tail of messages is one-or-more `tool` messages, return them.
+
+    Returns a dict mapping tool_call_id → content text. Returns None if the
+    tail does not end in a tool-result sequence.
+    """
+    results: dict[str, str] = {}
     for msg in reversed(messages):
         role = msg.get("role")
         if role == "tool":
-            return True
-        if role == "user":
-            return False
-        if role == "assistant":
-            return False
-    return False
-
-
-def _format_tool_results(messages: list[dict[str, Any]]) -> str:
-    """Format tool result messages and optional trailing user message as the prompt.
-
-    Expects messages ending with: ..., assistant(tool_calls), tool, [tool, ...], [user]
-    """
-    # Build a map of tool_call_id → tool name from assistant messages
-    call_id_to_name: dict[str, str] = {}
-    for msg in messages:
-        if msg.get("role") == "assistant":
-            for tc in msg.get("tool_calls") or []:
-                tc_id = tc.get("id", "")
-                fn = tc.get("function", {})
-                if tc_id and fn.get("name"):
-                    call_id_to_name[tc_id] = fn["name"]
-
-    parts: list[str] = []
-    trailing_user: str | None = None
-
-    # Collect tool results and optional trailing user message
-    for msg in reversed(messages):
-        role = msg.get("role")
-        if role == "user" and not parts:
-            trailing_user = _content_to_text(msg.get("content", ""))
-        elif role == "tool":
             call_id = msg.get("tool_call_id", "")
-            name = msg.get("name") or call_id_to_name.get(call_id, "tool")
-            content = str(msg.get("content", ""))
-            parts.append(
-                f'<tool_result name="{name}" call_id="{call_id}">\n'
-                f"{content}\n"
-                f"</tool_result>"
-            )
+            content = _content_to_text(msg.get("content", ""))
+            if call_id:
+                results[call_id] = content
         else:
-            break  # stop at assistant or system
-
-    parts.reverse()
-    prompt = _TOOL_RESULT_FRAMING + "\n\n" + "\n".join(parts)
-    if trailing_user:
-        prompt += f"\n\n{trailing_user}"
-    return prompt
-
-
-def _parse_tool_response(result_text: str) -> list[dict[str, Any]] | None:
-    """Try to parse a tool_calls JSON from Claude's response.
-
-    Returns the tool_calls list if the response is a tool call, None otherwise.
-    """
-    idx = result_text.find('{"tool_calls"')
-    if idx == -1:
-        return None
-    try:
-        data, _ = json.JSONDecoder().raw_decode(result_text, idx)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(data, dict):
-        return None
-    raw = data.get("tool_calls")
-    if not raw:
-        return None
-    # Handle both single object and array
-    tool_calls: list[dict[str, Any]] = [raw] if isinstance(raw, dict) else raw
-    if not isinstance(tool_calls, list) or not tool_calls:
-        return None
-    # Normalize IDs to OpenAI call_* format
-    for tc in tool_calls:
-        raw_id = tc.get("id") or uuid.uuid4().hex[:8]
-        tc["id"] = raw_id if str(raw_id).startswith("call_") else f"call_{raw_id}"
-    return tool_calls
+            break
+    return results or None
 
 
 # ---------------------------------------------------------------------------
-# Response builders
+# Response builders (TurnEvent → LiteLLM types)
 # ---------------------------------------------------------------------------
 
 
-def _build_model_response(
-    result: dict[str, Any],
+def _completion_from_events(
+    events: list[TurnEvent],
     model: str,
 ) -> ModelResponse:
-    """Build a LiteLLM ModelResponse from a CLI result dict.
+    text_parts: list[str] = []
+    thinking_parts: list[str] = []
+    tool_calls: list[ToolCall] = []
+    usage = {"input_tokens": 0, "output_tokens": 0}
 
-    Checks the result text for tool_calls JSON first — if found, returns
-    a proper tool_calls response instead of raw text.
-    """
-    result_text = result.get("result", "")
+    for evt in events:
+        if evt.kind == "text":
+            text_parts.append(evt.delta)
+        elif evt.kind == "thinking":
+            thinking_parts.append(evt.delta)
+        elif evt.kind == "tool_calls":
+            tool_calls = evt.calls
+        elif evt.kind == "end":
+            usage = evt.usage or usage
+        elif evt.kind == "error":
+            err = f"CLI error: {evt.message}"
+            raise RuntimeError(err)
 
-    # Always check if Claude responded with a tool call
-    tool_calls = _parse_tool_response(result_text)
     if tool_calls:
-        return _build_tool_call_response(tool_calls, result, model)
-
-    raw_usage = result.get("usage", {})
-    input_tokens = raw_usage.get("input_tokens", 0)
-    output_tokens = raw_usage.get("output_tokens", 0)
+        tc_objects = [
+            ChatCompletionMessageToolCall(
+                id=call.call_id,
+                type="function",
+                function=Function(
+                    name=call.name,
+                    arguments=json.dumps(call.arguments),
+                ),
+            )
+            for call in tool_calls
+        ]
+        message = Message(role="assistant", content=None, tool_calls=tc_objects)
+        finish_reason = "tool_calls"
+    else:
+        message = Message(role="assistant", content="".join(text_parts))
+        finish_reason = "stop"
 
     return ModelResponse(
         model=model,
-        choices=[
-            Choices(
-                message=Message(role="assistant", content=result_text),
-                finish_reason="stop",
-                index=0,
-            )
-        ],
+        choices=[Choices(message=message, finish_reason=finish_reason, index=0)],
         usage=Usage(
-            prompt_tokens=input_tokens,
-            completion_tokens=output_tokens,
-            total_tokens=input_tokens + output_tokens,
+            prompt_tokens=usage["input_tokens"],
+            completion_tokens=usage["output_tokens"],
+            total_tokens=usage["input_tokens"] + usage["output_tokens"],
         ),
     )
 
 
-def _build_tool_call_response(
-    tool_calls: list[dict[str, Any]],
-    result: dict[str, Any],
-    model: str,
-) -> ModelResponse:
-    """Build a ModelResponse with tool_calls (finish_reason: tool_calls)."""
-    raw_usage = result.get("usage", {})
-    input_tokens = raw_usage.get("input_tokens", 0)
-    output_tokens = raw_usage.get("output_tokens", 0)
-
-    tc_objects = [
-        ChatCompletionMessageToolCall(
-            id=tc["id"],
-            type="function",
-            function=Function(
-                name=tc["name"],
-                arguments=json.dumps(tc.get("arguments", {})),
-            ),
-        )
-        for tc in tool_calls
-    ]
-
-    return ModelResponse(
-        model=model,
-        choices=[
-            Choices(
-                message=Message(role="assistant", content=None, tool_calls=tc_objects),
-                finish_reason="tool_calls",
-                index=0,
-            )
-        ],
-        usage=Usage(
-            prompt_tokens=input_tokens,
-            completion_tokens=output_tokens,
-            total_tokens=input_tokens + output_tokens,
-        ),
-    )
+def _text_chunk(text: str, thinking: str | None = None) -> GenericStreamingChunk:
+    provider_fields = {"reasoning_content": thinking} if thinking else None
+    return {  # type: ignore[return-value]
+        "text": text,
+        "is_finished": False,
+        "finish_reason": None,
+        "index": 0,
+        "tool_use": None,
+        "usage": None,
+        "provider_specific_fields": provider_fields,
+    }
 
 
-def _tool_calls_to_chunk(tool_calls: list[dict[str, Any]]) -> GenericStreamingChunk:
-    """Build a single streaming chunk carrying tool_calls (finish_reason: tool_calls)."""
-    # Emit the first tool call; litellm handles the rest via the non-streaming path
-    tc = tool_calls[0]
+def _tool_calls_chunk(calls: list[ToolCall]) -> GenericStreamingChunk:
+    # LiteLLM's GenericStreamingChunk only carries one tool_use field;
+    # LiteLLM assembles the rest from the accompanying non-streaming plumbing.
+    tc = calls[0]
     return {  # type: ignore[return-value]
         "text": "",
         "is_finished": True,
         "finish_reason": "tool_calls",
         "index": 0,
         "tool_use": {
-            "id": tc["id"],
+            "id": tc.call_id,
             "type": "function",
-            "function": {
-                "name": tc["name"],
-                "arguments": json.dumps(tc.get("arguments", {})),
-            },
+            "function": {"name": tc.name, "arguments": json.dumps(tc.arguments)},
             "index": 0,
         },
         "usage": None,
@@ -552,33 +191,63 @@ def _tool_calls_to_chunk(tool_calls: list[dict[str, Any]]) -> GenericStreamingCh
     }
 
 
-def _stream_event_to_chunk(event: dict[str, Any]) -> GenericStreamingChunk:
-    """Convert a CLI stream event to a GenericStreamingChunk."""
-    usage = event.get("usage")
+def _end_chunk(usage: dict[str, int] | None) -> GenericStreamingChunk:
     usage_block = None
     if usage:
-        input_tokens = usage.get("input_tokens", 0)
-        output_tokens = usage.get("output_tokens", 0)
         usage_block = {
-            "prompt_tokens": input_tokens,
-            "completion_tokens": output_tokens,
-            "total_tokens": input_tokens + output_tokens,
+            "prompt_tokens": usage["input_tokens"],
+            "completion_tokens": usage["output_tokens"],
+            "total_tokens": usage["input_tokens"] + usage["output_tokens"],
         }
-
-    provider_fields = None
-    thinking = event.get("thinking")
-    if thinking:
-        provider_fields = {"reasoning_content": thinking}
-
     return {  # type: ignore[return-value]
-        "text": event.get("text", ""),
-        "is_finished": event.get("is_finished", False),
-        "finish_reason": "stop" if event.get("is_finished") else None,
+        "text": "",
+        "is_finished": True,
+        "finish_reason": "stop",
         "index": 0,
         "tool_use": None,
         "usage": usage_block,
-        "provider_specific_fields": provider_fields,
+        "provider_specific_fields": None,
     }
+
+
+# ---------------------------------------------------------------------------
+# Session resolution
+# ---------------------------------------------------------------------------
+
+
+def _get_tools(kwargs: dict[str, Any]) -> list[dict[str, Any]] | None:
+    # LiteLLM strips tools from custom handlers; fall back to the middleware cv.
+    optional = kwargs.get("optional_params") or {}
+    return optional.get("tools") or tools_var.get()
+
+
+def _is_stateless() -> bool:
+    return os.environ.get("CLAUDE_PROXY_STATELESS") == "1" or session_var.get() is None
+
+
+async def _resolve_session(
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
+    model_str: str,
+) -> tuple[Session, str]:
+    """Return (session, ephemeral_sid|"") where ephemeral_sid is set if stateless."""
+    model_name, effort = parse_model_string(model_str)
+    system_prompt = _extract_system_prompt(messages)
+    sid = session_var.get()
+    ephemeral = ""
+    if sid is None:
+        if tools:
+            err = "Tool use requires a session header (x-session-id or equivalent)"
+            raise ValueError(err)
+        ephemeral = str(uuid.uuid4())
+        sid = ephemeral
+
+    session = await get_pool().get_or_create(
+        sid,
+        model=model_name, effort=effort,
+        system_prompt=system_prompt, tools=tools,
+    )
+    return session, ephemeral
 
 
 # ---------------------------------------------------------------------------
@@ -587,273 +256,87 @@ def _stream_event_to_chunk(event: dict[str, Any]) -> GenericStreamingChunk:
 
 
 class ClaudeProxyHandler(CustomLLM):
-    """Custom LLM backend that routes requests to the claude CLI."""
-
-    def _log_request(self, model: str, messages: list, kwargs: dict) -> None:  # noqa: ANN401
-        logger.info(
-            "Request | model={model} messages={n}",
-            model=model,
-            n=len(messages),
-        )
-
-    # -- Dispatch: route tool vs non-tool requests --
+    """LiteLLM custom backend: one long-lived CLI subprocess per session."""
 
     def completion(self, model: str, messages: list, **kwargs: Any) -> ModelResponse:  # type: ignore[override]
-        self._log_request(model, messages, kwargs)
-        tools = _get_tools(kwargs)
-        if tools:
-            return self._tool_completion(model, messages, tools, **kwargs)
-        return self._cli_completion(model, messages, **kwargs)
+        return asyncio.run(self.acompletion(model, messages, **kwargs))
 
-    async def acompletion(self, model: str, messages: list, **kwargs: Any) -> ModelResponse:  # type: ignore[override]
-        self._log_request(model, messages, kwargs)
-        tools = _get_tools(kwargs)
-        if tools:
-            return await self._tool_acompletion(model, messages, tools, **kwargs)
-        return await self._cli_acompletion(model, messages, **kwargs)
-
-    def streaming(self, model: str, messages: list, **kwargs: Any) -> Iterator[GenericStreamingChunk]:  # type: ignore[override]
-        self._log_request(model, messages, kwargs)
-        tools = _get_tools(kwargs)
-        if tools:
-            yield from self._tool_streaming(model, messages, tools, **kwargs)
-            return
-        yield from self._cli_streaming(model, messages, **kwargs)
-
-    async def astreaming(self, model: str, messages: list, **kwargs: Any) -> AsyncIterator[GenericStreamingChunk]:  # type: ignore[override]
-        self._log_request(model, messages, kwargs)
-        tools = _get_tools(kwargs)
-        if tools:
-            async for chunk in self._tool_astreaming(model, messages, tools, **kwargs):
-                yield chunk
-            return
-        async for chunk in self._cli_astreaming(model, messages, **kwargs):
-            yield chunk
-
-    # -- Tool path (tool-using requests) --
-
-    def _tool_completion(
-        self, model: str, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **kwargs: Any,
+    async def acompletion(  # type: ignore[override]
+        self, model: str, messages: list[dict[str, Any]], **kwargs: Any,
     ) -> ModelResponse:
-        client_system = _extract_system_prompt(messages)
-        system_prompt = _build_tool_system_prompt(client_system, tools)
-        model_name, effort = _get_model_and_effort(model)
+        logger.info("Request | model={model} messages={n}", model=model, n=len(messages))
+        tools = _get_tools(kwargs)
+        session, ephemeral = await _resolve_session(messages, tools, model)
 
-        if _is_tool_result_turn(messages):
-            prompt = _format_tool_results(messages)
-        else:
-            prompt = _extract_prompt(messages)
+        try:
+            events = [evt async for evt in self._stream_events(session, messages)]
+            return _completion_from_events(events, model)
+        finally:
+            if ephemeral:
+                await get_pool().drop(ephemeral)
 
-        result = _run_with_session(
-            prompt, model=model_name, effort=effort,
-            system_prompt=system_prompt,
-        )
-
-
-        result_text = result.get("result", "")
-        tool_calls = _parse_tool_response(result_text)
-        if tool_calls:
-            return _build_tool_call_response(tool_calls, result, model)
-        return _build_model_response(result, model)
-
-    async def _tool_acompletion(
-        self, model: str, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **kwargs: Any,
-    ) -> ModelResponse:
-        client_system = _extract_system_prompt(messages)
-        system_prompt = _build_tool_system_prompt(client_system, tools)
-        model_name, effort = _get_model_and_effort(model)
-
-        if _is_tool_result_turn(messages):
-            prompt = _format_tool_results(messages)
-        else:
-            prompt = _extract_prompt(messages)
-
-        result = await _run_with_session_async(
-            prompt, model=model_name, effort=effort,
-            system_prompt=system_prompt,
-        )
-
-
-        result_text = result.get("result", "")
-        tool_calls = _parse_tool_response(result_text)
-        if tool_calls:
-            return _build_tool_call_response(tool_calls, result, model)
-        return _build_model_response(result, model)
-
-    # -- Tool streaming (buffer text, detect tool_calls, preserve thinking) --
-
-    def _tool_streaming(
-        self, model: str, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **kwargs: Any,
+    def streaming(  # type: ignore[override]
+        self, model: str, messages: list, **kwargs: Any,
     ) -> Iterator[GenericStreamingChunk]:
-        client_system = _extract_system_prompt(messages)
-        system_prompt = _build_tool_system_prompt(client_system, tools)
-        model_name, effort = _get_model_and_effort(model)
-
-        if _is_tool_result_turn(messages):
-            prompt = _format_tool_results(messages)
-        else:
-            prompt = _extract_prompt(messages)
-
-        # Stream events, buffering text to detect tool_calls at the end
-        accumulated_text = ""
-        buffered_chunks: list[GenericStreamingChunk] = []
-
-        for event in _stream_with_session(
-            prompt, model=model_name, effort=effort,
-            system_prompt=system_prompt,
-        ):
-
-            chunk = _stream_event_to_chunk(event)
-            text = event.get("text", "")
-            accumulated_text += text
-
-            if not accumulated_text.lstrip().startswith("{"):
-                # Definitely not a tool call — flush buffer and stream normally
-                for buffered in buffered_chunks:
-                    yield buffered
-                buffered_chunks.clear()
+        gen = self.astreaming(model, messages, **kwargs)
+        loop = asyncio.new_event_loop()
+        try:
+            while True:
+                try:
+                    chunk = loop.run_until_complete(gen.__anext__())
+                except StopAsyncIteration:
+                    return
                 yield chunk
-            else:
-                # Might be a tool call — buffer until we know
-                buffered_chunks.append(chunk)
+        finally:
+            loop.close()
 
-        tool_calls = _parse_tool_response(accumulated_text)
-        if tool_calls:
-            # Don't emit buffered text chunks — emit tool_calls instead
-            yield _tool_calls_to_chunk(tool_calls)
-        elif buffered_chunks:
-            # Was buffering but turned out to be text — flush
-            for buffered in buffered_chunks:
-                yield buffered
-
-    async def _tool_astreaming(
-        self, model: str, messages: list[dict[str, Any]], tools: list[dict[str, Any]], **kwargs: Any,
+    async def astreaming(  # type: ignore[override]
+        self, model: str, messages: list[dict[str, Any]], **kwargs: Any,
     ) -> AsyncIterator[GenericStreamingChunk]:
-        client_system = _extract_system_prompt(messages)
-        system_prompt = _build_tool_system_prompt(client_system, tools)
-        model_name, effort = _get_model_and_effort(model)
+        logger.info("Stream | model={model} messages={n}", model=model, n=len(messages))
+        tools = _get_tools(kwargs)
+        session, ephemeral = await _resolve_session(messages, tools, model)
 
-        if _is_tool_result_turn(messages):
-            prompt = _format_tool_results(messages)
+        try:
+            async for chunk in self._stream_chunks(session, messages):
+                yield chunk
+        finally:
+            if ephemeral:
+                await get_pool().drop(ephemeral)
+
+    # ------------------------------------------------------------------
+
+    async def _stream_events(
+        self, session: Session, messages: list[dict[str, Any]],
+    ) -> AsyncIterator[TurnEvent]:
+        tool_results = _trailing_tool_results(messages)
+        if tool_results:
+            gen = session.run_tool_result_turn(tool_results)
         else:
-            prompt = _extract_prompt(messages)
+            # Stateless sessions have no prior memory: resend the history.
+            stateless = session_var.get() is None
+            text = _format_history_as_prompt(messages) if stateless else _last_user_text(messages)
+            gen = session.run_user_turn(text)
+        async for evt in gen:
+            yield evt
 
-        accumulated_text = ""
-        buffered_chunks: list[GenericStreamingChunk] = []
-
-        async for event in _stream_with_session_async(
-            prompt, model=model_name, effort=effort,
-            system_prompt=system_prompt,
-        ):
-
-            chunk = _stream_event_to_chunk(event)
-            text = event.get("text", "")
-            accumulated_text += text
-
-            if not accumulated_text.lstrip().startswith("{"):
-                for buffered in buffered_chunks:
-                    yield buffered
-                buffered_chunks.clear()
-                yield chunk
-            else:
-                buffered_chunks.append(chunk)
-
-        tool_calls = _parse_tool_response(accumulated_text)
-        if tool_calls:
-            yield _tool_calls_to_chunk(tool_calls)
-        elif buffered_chunks:
-            for buffered in buffered_chunks:
-                yield buffered
-
-    # -- CLI path (tool-free requests) --
-
-    def _cli_completion(self, model: str, messages: list[dict[str, Any]], **kwargs: Any) -> ModelResponse:
-        prompt = _extract_prompt(messages)
-        system_prompt = _build_system_prompt(messages)
-        model_name, effort = _get_model_and_effort(model)
-
-        result = _run_with_session(
-            prompt, model=model_name, effort=effort,
-            system_prompt=system_prompt,
-        )
-
-        return _build_model_response(result, model)
-
-    async def _cli_acompletion(self, model: str, messages: list[dict[str, Any]], **kwargs: Any) -> ModelResponse:
-        prompt = _extract_prompt(messages)
-        system_prompt = _build_system_prompt(messages)
-        model_name, effort = _get_model_and_effort(model)
-
-        result = await _run_with_session_async(
-            prompt, model=model_name, effort=effort,
-            system_prompt=system_prompt,
-        )
-
-        return _build_model_response(result, model)
-
-    def _cli_streaming(self, model: str, messages: list[dict[str, Any]], **kwargs: Any) -> Iterator[GenericStreamingChunk]:
-        prompt = _extract_prompt(messages)
-        system_prompt = _build_system_prompt(messages)
-        model_name, effort = _get_model_and_effort(model)
-
-        accumulated_text = ""
-        buffered_chunks: list[GenericStreamingChunk] = []
-
-        for event in _stream_with_session(
-            prompt, model=model_name, effort=effort,
-            system_prompt=system_prompt,
-        ):
-
-            chunk = _stream_event_to_chunk(event)
-            text = event.get("text", "")
-            accumulated_text += text
-
-            if not accumulated_text.lstrip().startswith("{"):
-                for buffered in buffered_chunks:
-                    yield buffered
-                buffered_chunks.clear()
-                yield chunk
-            else:
-                buffered_chunks.append(chunk)
-
-        tool_calls = _parse_tool_response(accumulated_text)
-        if tool_calls:
-            yield _tool_calls_to_chunk(tool_calls)
-        elif buffered_chunks:
-            for buffered in buffered_chunks:
-                yield buffered
-
-    async def _cli_astreaming(self, model: str, messages: list[dict[str, Any]], **kwargs: Any) -> AsyncIterator[GenericStreamingChunk]:
-        prompt = _extract_prompt(messages)
-        system_prompt = _build_system_prompt(messages)
-        model_name, effort = _get_model_and_effort(model)
-
-        accumulated_text = ""
-        buffered_chunks: list[GenericStreamingChunk] = []
-
-        async for event in _stream_with_session_async(
-            prompt, model=model_name, effort=effort,
-            system_prompt=system_prompt,
-        ):
-
-            chunk = _stream_event_to_chunk(event)
-            text = event.get("text", "")
-            accumulated_text += text
-
-            if not accumulated_text.lstrip().startswith("{"):
-                for buffered in buffered_chunks:
-                    yield buffered
-                buffered_chunks.clear()
-                yield chunk
-            else:
-                buffered_chunks.append(chunk)
-
-        tool_calls = _parse_tool_response(accumulated_text)
-        if tool_calls:
-            yield _tool_calls_to_chunk(tool_calls)
-        elif buffered_chunks:
-            for buffered in buffered_chunks:
-                yield buffered
+    async def _stream_chunks(
+        self, session: Session, messages: list[dict[str, Any]],
+    ) -> AsyncIterator[GenericStreamingChunk]:
+        async for evt in self._stream_events(session, messages):
+            if evt.kind == "text":
+                yield _text_chunk(evt.delta)
+            elif evt.kind == "thinking":
+                yield _text_chunk("", thinking=evt.delta)
+            elif evt.kind == "tool_calls":
+                yield _tool_calls_chunk(evt.calls)
+                return
+            elif evt.kind == "end":
+                yield _end_chunk(evt.usage)
+                return
+            elif evt.kind == "error":
+                err = f"CLI error: {evt.message}"
+                raise RuntimeError(err)
 
 
 handler = ClaudeProxyHandler()
