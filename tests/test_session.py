@@ -62,3 +62,53 @@ def test_list_mcp_tools_skips_non_function():
         {"type": "function"},  # missing function.name
     ]
     assert [t["name"] for t in session.list_mcp_tools()] == ["ok"]
+
+
+def test_is_alive_no_proc():
+    s = Session.__new__(Session)
+    s._closed = False
+    s._proc = None
+    assert s.is_alive() is False
+
+
+def test_is_alive_closed():
+    s = Session.__new__(Session)
+    s._closed = True
+    s._proc = object()  # type: ignore[assignment]
+    assert s.is_alive() is False
+
+
+def test_is_alive_exited():
+    class FakeProc:
+        returncode = 0
+        stdin = None
+    s = Session.__new__(Session)
+    s._closed = False
+    s._proc = FakeProc()  # type: ignore[assignment]
+    assert s.is_alive() is False
+
+
+def test_is_alive_stdin_closing():
+    class FakeStdin:
+        def is_closing(self):
+            return True
+    class FakeProc:
+        returncode = None
+        stdin = FakeStdin()
+    s = Session.__new__(Session)
+    s._closed = False
+    s._proc = FakeProc()  # type: ignore[assignment]
+    assert s.is_alive() is False
+
+
+def test_is_alive_running():
+    class FakeStdin:
+        def is_closing(self):
+            return False
+    class FakeProc:
+        returncode = None
+        stdin = FakeStdin()
+    s = Session.__new__(Session)
+    s._closed = False
+    s._proc = FakeProc()  # type: ignore[assignment]
+    assert s.is_alive() is True

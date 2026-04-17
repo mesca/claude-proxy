@@ -50,17 +50,31 @@ class SessionPool:
         system_prompt: str | None,
         tools: list[dict[str, Any]] | None,
     ) -> Session:
-        """Return the session for sid, respawning if configuration changed."""
+        """Return the session for sid, respawning if dead or configuration changed."""
         self._ensure_reaper()
         lock = self._create_locks.setdefault(sid, asyncio.Lock())
         async with lock:
             existing = self._sessions.get(sid)
-            if existing and _config_matches(existing, model, effort, system_prompt, tools):
-                return existing
+            resume = False
             if existing:
-                logger.info("Session {} config changed, respawning", sid)
-                await existing.close()
-                self._sessions.pop(sid, None)
+                if not existing.is_alive():
+                    logger.warning("Session {} subprocess is dead, respawning", sid)
+                    await existing.close()
+                    self._sessions.pop(sid, None)
+                    resume = True  # session file exists on disk
+                elif existing.pending_calls:
+                    # A tool cycle is in flight; respawning would orphan the
+                    # pending MCP RPC. Keep the live session regardless of
+                    # config drift — the new model/tools/system prompt will
+                    # take effect on the next turn, not mid-cycle.
+                    return existing
+                elif not _config_matches(existing, model, effort, system_prompt, tools):
+                    logger.info("Session {} config changed, respawning", sid)
+                    await existing.close()
+                    self._sessions.pop(sid, None)
+                    resume = True
+                else:
+                    return existing
 
             session = Session(
                 sid,
@@ -69,9 +83,17 @@ class SessionPool:
                 system_prompt=system_prompt,
                 tools=tools,
                 bridge_url=self.bridge_url,
+                resume=resume,
             )
-            await session.start()
+            # Pre-register so the MCP bridge can resolve this sid during the
+            # CLI's initialize/tools/list handshake (which happens concurrently
+            # with spawn). Pop on failure so the entry doesn't leak.
             self._sessions[sid] = session
+            try:
+                await session.start()
+            except Exception:
+                self._sessions.pop(sid, None)
+                raise
             return session
 
     async def drop(self, sid: str) -> None:

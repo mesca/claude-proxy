@@ -23,6 +23,10 @@ CLI_BINARY = "claude"
 _MCP_PREFIX = "mcp__proxy__"
 
 
+class _SpawnQuickFailError(Exception):
+    """Raised when the CLI subprocess exits fast after spawn (likely wrong session flag)."""
+
+
 @dataclass
 class ToolCall:
     """A tool invocation emitted by Claude, awaiting a client-side result."""
@@ -70,6 +74,7 @@ class Session:
         system_prompt: str | None,
         tools: list[dict[str, Any]] | None,
         bridge_url: str,
+        resume: bool = False,
     ) -> None:
         self.sid = sid
         self.model = model
@@ -77,6 +82,7 @@ class Session:
         self.system_prompt = system_prompt
         self.tools = tools or []
         self.bridge_url = bridge_url
+        self.resume = resume
 
         self._proc: asyncio.subprocess.Process | None = None
         self._stdout_task: asyncio.Task[None] | None = None
@@ -95,7 +101,14 @@ class Session:
     # Lifecycle
     # ------------------------------------------------------------------
 
-    async def start(self) -> None:
+    def is_alive(self) -> bool:
+        """Return True iff the subprocess is running and stdin is writable."""
+        if self._closed or self._proc is None or self._proc.returncode is not None:
+            return False
+        stdin = self._proc.stdin
+        return stdin is not None and not stdin.is_closing()
+
+    def _build_cmd(self, session_flag: str) -> list[str]:
         mcp_cfg = json.dumps({
             "mcpServers": {
                 "proxy": {
@@ -109,7 +122,7 @@ class Session:
             CLI_BINARY, "-p",
             "--input-format", "stream-json",
             "--output-format", "stream-json", "--verbose",
-            "--session-id", self.sid,
+            session_flag, self.sid,
             "--tools", "",
             "--allowedTools", "mcp__proxy",
             "--disable-slash-commands",
@@ -122,16 +135,65 @@ class Session:
             cmd += ["--model", self.model]
         if self.effort:
             cmd += ["--effort", self.effort]
+        return cmd
 
-        logger.info("Spawning session {} model={} effort={}", self.sid, self.model, self.effort)
+    async def start(self) -> None:
+        """Spawn the CLI subprocess, falling back between --session-id and --resume.
+
+        A session file exists iff `resume=True` OR the proxy was restarted with
+        a sid it had spawned before. We try the expected flag first; if the CLI
+        disagrees (session-already-in-use or session-not-found), we retry with
+        the other flag.
+        """
+        flags = ["--resume", "--session-id"] if self.resume else ["--session-id", "--resume"]
+        last_err: Exception | None = None
+        for attempt, flag in enumerate(flags):
+            try:
+                await self._spawn_once(flag)
+                return
+            except _SpawnQuickFailError as e:
+                last_err = e
+                logger.info(
+                    "Session {} spawn with {} failed: {} (attempt {}/{})",
+                    self.sid, flag, e, attempt + 1, len(flags),
+                )
+        err = f"failed to spawn session {self.sid}: {last_err}"
+        raise RuntimeError(err)
+
+    async def _spawn_once(self, session_flag: str) -> None:
+        cmd = self._build_cmd(session_flag)
+        logger.info(
+            "Spawning session {} with {} model={} effort={}",
+            self.sid, session_flag, self.model, self.effort,
+        )
         self._proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        self._stdout_task = asyncio.create_task(self._pump_stdout(), name=f"session-stdout-{self.sid}")
-        self._stderr_task = asyncio.create_task(self._pump_stderr(), name=f"session-stderr-{self.sid}")
+        # Detect fast-failing spawn (wrong session flag → CLI exits within ~100ms
+        # with "already in use" / "not found"). Short window keeps latency low
+        # while still catching the common misuse.
+        try:
+            await asyncio.wait_for(self._proc.wait(), timeout=0.3)
+        except TimeoutError:
+            # Still running → good; wire up pumps.
+            self._stdout_task = asyncio.create_task(
+                self._pump_stdout(), name=f"session-stdout-{self.sid}",
+            )
+            self._stderr_task = asyncio.create_task(
+                self._pump_stderr(), name=f"session-stderr-{self.sid}",
+            )
+            return
+        # Exited fast — read stderr to determine retryable.
+        stderr_bytes = b""
+        if self._proc.stderr is not None:
+            with contextlib.suppress(Exception):
+                stderr_bytes = await self._proc.stderr.read()
+        msg = stderr_bytes.decode(errors="replace").strip() or f"exit code {self._proc.returncode}"
+        self._proc = None
+        raise _SpawnQuickFailError(msg)
 
     async def close(self) -> None:
         if self._closed:
@@ -258,12 +320,25 @@ class Session:
             self.last_activity = time.monotonic()
 
             if tool_results is not None:
+                matched = 0
                 for call_id, content in tool_results.items():
                     call = self.pending_calls.get(call_id)
                     if call and not call.future.done():
                         call.future.set_result(content)
+                        matched += 1
                     else:
                         logger.warning("No pending call for id={} sid={}", call_id, self.sid)
+                if matched == 0:
+                    # The session has no memory of these tool calls — likely the
+                    # subprocess died between the prior tool_calls response and
+                    # now, and the tool cycle cannot be resumed. Signal the
+                    # client rather than hang waiting for CLI output.
+                    err = (
+                        "tool_result(s) reference call_ids unknown to this session; "
+                        "the underlying subprocess was respawned mid-cycle. "
+                        "Restart the conversation with a fresh request."
+                    )
+                    raise RuntimeError(err)
 
             if user_text is not None:
                 await self._send_user(user_text)
