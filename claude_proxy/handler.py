@@ -12,6 +12,7 @@ session per request, with no tool support.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import uuid
 from collections.abc import AsyncIterator, Iterator
@@ -201,6 +202,22 @@ def _get_tools(kwargs: dict[str, Any]) -> list[dict[str, Any]] | None:
     return optional.get("tools") or tools_var.get()
 
 
+def _log_request(
+    kind: str,
+    model: str,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
+    session: Session,
+) -> None:
+    sysprompt = _extract_system_prompt(messages)
+    sys_hash = hashlib.sha256(sysprompt.encode()).hexdigest()[:8]
+    logger.info(
+        "{kind} | model={model} msgs={n} user_sid={u} internal={i} sys={h} tools={t}",
+        kind=kind, model=model, n=len(messages),
+        u=session_var.get(), i=session.sid, h=sys_hash, t=len(tools or []),
+    )
+
+
 async def _resolve_session(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None,
@@ -240,9 +257,9 @@ class ClaudeProxyHandler(CustomLLM):
     async def acompletion(  # type: ignore[override]
         self, model: str, messages: list[dict[str, Any]], **kwargs: Any,
     ) -> ModelResponse:
-        logger.info("Request | model={model} messages={n}", model=model, n=len(messages))
         tools = _get_tools(kwargs)
         session, ephemeral = await _resolve_session(messages, tools, model)
+        _log_request("Request", model, messages, tools, session)
 
         try:
             events = [evt async for evt in self._stream_events(session, messages)]
@@ -269,9 +286,9 @@ class ClaudeProxyHandler(CustomLLM):
     async def astreaming(  # type: ignore[override]
         self, model: str, messages: list[dict[str, Any]], **kwargs: Any,
     ) -> AsyncIterator[GenericStreamingChunk]:
-        logger.info("Stream | model={model} messages={n}", model=model, n=len(messages))
         tools = _get_tools(kwargs)
         session, ephemeral = await _resolve_session(messages, tools, model)
+        _log_request("Stream", model, messages, tools, session)
 
         try:
             async for chunk in self._stream_chunks(session, messages):
