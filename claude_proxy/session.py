@@ -352,22 +352,22 @@ class Session:
             if user_text is not None:
                 await self._send_user(user_text)
 
+            turn_ended = False
             try:
                 async for evt in self._iterate_events():
                     self.last_activity = time.monotonic()
+                    # Set BEFORE yield: any GeneratorExit arriving at the
+                    # yield after this point is benign teardown, not a
+                    # real mid-stream interruption.
+                    if evt.kind in {"end", "tool_calls", "error"}:
+                        turn_ended = True
                     yield evt
             except (asyncio.CancelledError, GeneratorExit):
-                # If pending_calls is non-empty, we just emitted tool_calls
-                # and the consumer is tearing down normally; the subprocess
-                # is healthy (blocked on MCP awaiting the tool_result). Do
-                # NOT mark dead — the next request must find the same live
-                # session to resolve the parked future.
-                #
-                # If pending_calls is empty, we were mid-text-stream and the
-                # client actually disconnected. The subprocess is in an
-                # undefined state; mark dead so the next request respawns
-                # via --resume.
-                if not self.pending_calls:
+                # If the turn already produced its terminal event, the
+                # consumer is tearing down normally. Otherwise the client
+                # disconnected mid-text-stream; mark dead so the next
+                # request respawns via --resume.
+                if not turn_ended:
                     logger.warning(
                         "Session {} interrupted mid-stream; marking for respawn",
                         self.sid,
