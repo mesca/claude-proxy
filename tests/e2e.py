@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -265,6 +266,47 @@ r = post("/v1/chat/completions", {
 raw = json.dumps(r)
 check("requires a session header" in raw, "T10 stateless+tools rejected",
       f"got {raw[:150]}")
+
+# --- T13: streaming tool_calls → tool result continuation on same session ---
+# This is the path OpenCode exercises: streaming request, receive tool_calls
+# chunk, send tool result in a follow-up request. Uses x-session-affinity
+# (OpenCode's header) to exactly match the real client. Regression guard for
+# the "subprocess was respawned mid-cycle" bug where GeneratorExit during
+# stream teardown wrongly marked the session dead.
+print("=== T13 streaming tool_calls → continuation (OpenCode-shape) ===")
+T13_SYS = "You MUST call the add tool. Never compute yourself."
+T13_HEADER = {"x-session-affinity": f"T13-oc-{RUN}"}
+s = stream("/v1/chat/completions", {
+    "model": TOOL_MODEL,
+    "messages": [
+        {"role": "system", "content": T13_SYS},
+        {"role": "user", "content": "Use the add tool with a=4 b=6"},
+    ],
+    "tools": [tool_def],
+    "stream": True,
+}, {**T13_HEADER, "content-type": "application/json"})
+check("tool_calls" in s, "T13a streaming emits tool_calls")
+# Extract the call_id from the streamed SSE
+m = re.search(r'"id":"(call_[a-f0-9]+)"', s)
+if m:
+    tcid13 = m.group(1)
+    r = post("/v1/chat/completions", {
+        "model": TOOL_MODEL,
+        "messages": [
+            {"role": "system", "content": T13_SYS},
+            {"role": "user", "content": "Use the add tool with a=4 b=6"},
+            {"role": "assistant", "tool_calls": [{"id": tcid13, "type": "function",
+                "function": {"name": "add", "arguments": '{"a":4,"b":6}'}}]},
+            {"role": "tool", "tool_call_id": tcid13, "content": "10"},
+        ],
+        "tools": [tool_def],
+    }, T13_HEADER)
+    check(finish(r) == "stop", "T13b continuation after streamed tool_calls",
+          f"got finish={finish(r)}")
+    check("10" in content(r), "T13c answer has 10", f"got {content(r)[:100]}")
+else:
+    check(False, "T13 extract call_id from stream", "no call_ id found")
+
 
 # --- T11: client disconnect then reconnect — session must be reusable ---
 print("=== T11 client disconnect then reconnect ===")

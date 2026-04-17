@@ -357,12 +357,22 @@ class Session:
                     self.last_activity = time.monotonic()
                     yield evt
             except (asyncio.CancelledError, GeneratorExit):
-                # Client disconnected mid-turn. The subprocess is in an
-                # undefined state (possibly mid-stream, possibly blocked on
-                # an orphaned tool call). Mark the session dead so the next
-                # request spawns a fresh subprocess via --resume.
-                logger.warning("Session {} turn interrupted; marking for respawn", self.sid)
-                self._closed = True
+                # If pending_calls is non-empty, we just emitted tool_calls
+                # and the consumer is tearing down normally; the subprocess
+                # is healthy (blocked on MCP awaiting the tool_result). Do
+                # NOT mark dead — the next request must find the same live
+                # session to resolve the parked future.
+                #
+                # If pending_calls is empty, we were mid-text-stream and the
+                # client actually disconnected. The subprocess is in an
+                # undefined state; mark dead so the next request respawns
+                # via --resume.
+                if not self.pending_calls:
+                    logger.warning(
+                        "Session {} interrupted mid-stream; marking for respawn",
+                        self.sid,
+                    )
+                    self._closed = True
                 raise
 
     async def _send_user(self, text: str) -> None:
