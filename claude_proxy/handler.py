@@ -206,24 +206,24 @@ async def _resolve_session(
     tools: list[dict[str, Any]] | None,
     model_str: str,
 ) -> tuple[Session, str]:
-    """Return (session, ephemeral_sid|"") where ephemeral_sid is set if stateless."""
+    """Return (session, ephemeral_sid) where ephemeral_sid is set if stateless."""
     model_name, effort = parse_model_string(model_str)
     system_prompt = _extract_system_prompt(messages)
     sid = session_var.get()
-    ephemeral = ""
+    ephemeral_sid = ""
     if sid is None:
         if tools:
             err = "Tool use requires a session header (x-session-id or equivalent)"
             raise ValueError(err)
-        ephemeral = str(uuid.uuid4())
-        sid = ephemeral
+        ephemeral_sid = str(uuid.uuid4())
+        sid = ephemeral_sid
 
     session = await get_pool().get_or_create(
         sid,
         model=model_name, effort=effort,
         system_prompt=system_prompt, tools=tools,
     )
-    return session, ephemeral
+    return session, ephemeral_sid
 
 
 # ---------------------------------------------------------------------------

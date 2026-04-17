@@ -5,6 +5,7 @@ Tests every feature + the new dead-subprocess recovery path.
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import os
 import re
@@ -333,6 +334,39 @@ r = post("/v1/chat/completions", {
 }, H("T11"), timeout=30)
 check("RECOVERED" in content(r), "T11 session reusable after disconnect",
       f"got {content(r)[:100]}")
+
+# --- T14: concurrent requests with DIFFERENT configs on the same session ---
+# OpenCode fires a haiku "title-gen" and a sonnet chat request in parallel,
+# both stamped with the same x-session-affinity. Before the fix, the second
+# request saw "config changed" and closed the first request's subprocess,
+# leading to a permanent hang.
+print("=== T14 concurrent different-config requests on same sid ===")
+T14_HEADER = {"x-session-affinity": f"T14-concurrent-{RUN}"}
+
+def worker_sonnet() -> dict:
+    return httpx.post(f"{BASE}/v1/chat/completions", timeout=60,
+        headers={**T14_HEADER, "content-type": "application/json"}, json={
+            "model": "claude-sonnet-4-6",
+            "messages": [{"role": "user", "content": "reply SONNETOK only"}],
+        }).json()
+
+def worker_haiku() -> dict:
+    return httpx.post(f"{BASE}/v1/chat/completions", timeout=60,
+        headers={**T14_HEADER, "content-type": "application/json"}, json={
+            "model": "claude-haiku-4-5",
+            "messages": [{"role": "user", "content": "reply HAIKUOK only"}],
+        }).json()
+
+with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
+    f_sonnet = ex.submit(worker_sonnet)
+    f_haiku = ex.submit(worker_haiku)
+    r_sonnet = f_sonnet.result(timeout=60)
+    r_haiku = f_haiku.result(timeout=60)
+check("SONNETOK" in content(r_sonnet) or "OK" in content(r_sonnet),
+      "T14 sonnet completed", f"got {content(r_sonnet)[:100]}")
+check("HAIKUOK" in content(r_haiku) or "OK" in content(r_haiku),
+      "T14 haiku completed", f"got {content(r_haiku)[:100]}")
+
 
 # --- T12: OpenCode-shape request (x-session-affinity + many tools + big system) ---
 print("=== T12 OpenCode-shape hello ===")

@@ -50,7 +50,13 @@ class SessionPool:
         system_prompt: str | None,
         tools: list[dict[str, Any]] | None,
     ) -> Session:
-        """Return the session for sid, respawning if dead or configuration changed."""
+        """Return the session for sid, respawning if dead or config changed.
+
+        Concurrent requests on the same sid are serialized by the middleware
+        (per-sid asyncio lock), so this method is only ever called one-at-a-
+        time per sid. Config drift between serialized turns respawns the
+        subprocess; no ephemeral sessions are needed.
+        """
         self._ensure_reaper()
         lock = self._create_locks.setdefault(sid, asyncio.Lock())
         async with lock:
@@ -68,13 +74,13 @@ class SessionPool:
                     # config drift — the new model/tools/system prompt will
                     # take effect on the next turn, not mid-cycle.
                     return existing
-                elif not _config_matches(existing, model, effort, system_prompt, tools):
+                elif _config_matches(existing, model, effort, system_prompt, tools):
+                    return existing
+                else:
                     logger.info("Session {} config changed, respawning", sid)
                     await existing.close()
                     self._sessions.pop(sid, None)
                     resume = True
-                else:
-                    return existing
 
             session = Session(
                 sid,

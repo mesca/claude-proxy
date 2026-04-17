@@ -10,6 +10,7 @@ Also flattens LiteLLM's reasoning_content onto delta for streaming clients
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import json
 import os
@@ -33,6 +34,13 @@ _WELL_KNOWN_HEADERS = [
     b"x-conversation-id",
 ]
 _warned_no_header = False
+
+# Per-sid locks that serialize concurrent HTTP requests sharing the same
+# session header. OpenCode fires haiku (metadata) and sonnet (chat) calls
+# in parallel on the same x-session-affinity; without this lock they race
+# on --resume/--session-id, close each other's subprocess mid-stream, and
+# deadlock. The second request simply waits for the first to finish.
+_session_locks: dict[str, asyncio.Lock] = {}
 
 
 class ReasoningContentMiddleware:
@@ -73,7 +81,15 @@ class RequestContextMiddleware:
 
         receive = await _extract_tools_from_request(receive)
         _detect_session(scope)
-        await self.app(scope, receive, send)
+
+        sid = session_var.get()
+        if sid is None:
+            await self.app(scope, receive, send)
+            return
+
+        lock = _session_locks.setdefault(sid, asyncio.Lock())
+        async with lock:
+            await self.app(scope, receive, send)
 
 
 # ---------------------------------------------------------------------------
@@ -83,8 +99,6 @@ class RequestContextMiddleware:
 
 async def _extract_tools_from_request(receive: Callable) -> Callable:
     """Read and buffer the body, set tools_var, return a replay receive."""
-    import asyncio
-
     body_chunks: list[bytes] = []
     messages: list[dict] = []
 
