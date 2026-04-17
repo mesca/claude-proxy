@@ -270,8 +270,9 @@ A per-session lock in the middleware ensures only one HTTP request is in flight 
 **Consequences:**
 
 - Safe: no `--resume` races, no mid-stream subprocess kills, no tool-cycle contamination.
-- Trade-off: if a client fires parallel requests on the same header expecting them to run concurrently, they will run sequentially instead. OpenCode in particular fires a background "title-gen" request alongside the main chat with the same `x-session-affinity` — the two run one after the other, not in parallel. The latency of the main chat is unaffected because the title-gen is usually fast, but throughput on heavy parallel workloads is capped at 1×.
-- Workaround for clients that need true parallelism: use distinct session header values (e.g. `x-session-affinity: conv-42-primary` and `conv-42-titlegen`) so each lands in a different pool slot.
+- Trade-off: if a client fires parallel requests on the same header expecting them to run concurrently, they will run sequentially instead.
+- In practice, OpenCode assigns a different `x-session-affinity` to each parallel sub-agent it spawns (via the `task` tool), so they do run in parallel. The only intra-header contention in normal usage is the background "title-gen" request against the main chat, which is tiny and harmless.
+- Workaround for clients that need true parallelism on the same logical session: use distinct header values (e.g. `x-session-affinity: conv-42-primary` and `conv-42-titlegen`) so each lands in a different pool slot.
 
 ## Development
 

@@ -211,7 +211,7 @@ def _log_request(
 ) -> None:
     sysprompt = _extract_system_prompt(messages)
     sys_hash = hashlib.sha256(sysprompt.encode()).hexdigest()[:8]
-    logger.info(
+    logger.debug(
         "{kind} | model={model} msgs={n} user_sid={u} internal={i} sys={h} tools={t}",
         kind=kind, model=model, n=len(messages),
         u=session_var.get(), i=session.sid, h=sys_hash, t=len(tools or []),
