@@ -18,6 +18,7 @@ OpenAI-compatible proxy that routes requests to the Claude CLI.
 - [API usage](#api-usage)
 - [OpenCode](#opencode)
 - [Architecture](#architecture)
+- [Limitations](#limitations)
 - [Development](#development)
 
 </details>
@@ -105,7 +106,9 @@ Extended thinking content is sent as `reasoning_content` in SSE chunks.
 
 The proxy maintains one long-lived Claude CLI subprocess per session for conversation continuity, low latency, and prompt caching (up to 90% cost savings on repeated context).
 
-A session header is auto-discovered from each request. A deterministic UUID is derived from the header value and used as the subprocess's `--session-id`. User messages are streamed into the subprocess's stdin; assistant output streams back on stdout. Idle subprocesses are reaped after 15 minutes of inactivity.
+A session header is auto-discovered from each request. A deterministic UUID is derived from the combination of the header value and the request's system prompt (`sha256`) and used as the subprocess's `--session-id`. User messages are streamed into the subprocess's stdin; assistant output streams back on stdout. Idle subprocesses are reaped after 15 minutes of inactivity.
+
+Concurrent requests sharing the same session header are serialized: the second request waits for the first to finish before running. This prevents two turns from racing on the same CLI subprocess.
 
 Well-known headers (checked in order): `x-session-affinity` (OpenCode), `x-session-id`, `x-conversation-id`. Use `--session-header` to override. If no header is found, the proxy falls back to stateless mode with a warning.
 
@@ -248,6 +251,28 @@ Claude is sandboxed as a pure LLM — all built-in tools, skills and user MCP se
 | `--input-format stream-json` | Feed structured user/tool messages over stdin |
 | `--session-id` | Persistent session UUID across turns in the same process |
 | `--system-prompt` | Replace default system prompt with client's |
+
+## Limitations
+
+### Session identity includes the system prompt
+
+The internal CLI session UUID is derived from two inputs: the session header value and the exact bytes of the `system` message. Two requests sharing a header but differing on the system prompt map to different CLI sessions with different on-disk conversation histories.
+
+**Consequences:**
+
+- **Model / effort / tools change, same system prompt** — same session, respawn with `--resume`. History preserved, prompt cache still warm after the respawn.
+- **System prompt change** — new session, empty history, new on-disk file, cold prompt cache. Useful when it's semantically a different conversation (e.g. OpenCode's title-gen has a different system prompt from the main chat and must not contaminate it). Undesirable when the client regenerates the system prompt on every turn (e.g. embeds a timestamp or a rotating tool list) — you'll see a fresh `Spawning session …` log line every turn and lose all caching benefits.
+- **Adding / removing an MCP server in the client** often forces the client to regenerate its system prompt (the new tools usually need to be described). In that case the old conversation does not carry over to the new tool set. If this matters, edit the client's system prompt to be stable across tool-set changes, or expect a fresh session on every toolchange.
+
+### Concurrent requests on the same session header are serialized
+
+A per-session lock in the middleware ensures only one HTTP request is in flight per session header at a time. The second request on the same header waits for the first to finish before running.
+
+**Consequences:**
+
+- Safe: no `--resume` races, no mid-stream subprocess kills, no tool-cycle contamination.
+- Trade-off: if a client fires parallel requests on the same header expecting them to run concurrently, they will run sequentially instead. OpenCode in particular fires a background "title-gen" request alongside the main chat with the same `x-session-affinity` — the two run one after the other, not in parallel. The latency of the main chat is unaffected because the title-gen is usually fast, but throughput on heavy parallel workloads is capped at 1×.
+- Workaround for clients that need true parallelism: use distinct session header values (e.g. `x-session-affinity: conv-42-primary` and `conv-42-titlegen`) so each lands in a different pool slot.
 
 ## Development
 
