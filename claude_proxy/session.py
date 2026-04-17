@@ -22,6 +22,11 @@ from claude_proxy.log import logger
 CLI_BINARY = "claude"
 _MCP_PREFIX = "mcp__proxy__"
 
+# Maximum time a parked MCP tools/call will wait for the client to post its
+# result before giving up. Prevents a vanished client from pinning the CLI
+# subprocess (and a FastAPI worker) forever.
+TOOL_CALL_TIMEOUT_SECONDS = 5 * 60
+
 
 class _SpawnQuickFailError(Exception):
     """Raised when the CLI subprocess exits fast after spawn (likely wrong session flag)."""
@@ -272,8 +277,16 @@ class Session:
         self.pending_calls[call.call_id] = call
         await self._mcp_calls.put(call)
         logger.debug("mcp tools/call → {} name={} call_id={}", self.sid, unprefixed, call.call_id)
+
         try:
-            return await call.future
+            return await asyncio.wait_for(call.future, timeout=TOOL_CALL_TIMEOUT_SECONDS)
+        except TimeoutError:
+            logger.warning(
+                "Tool call {} timed out after {}s; client never posted result",
+                call.call_id, TOOL_CALL_TIMEOUT_SECONDS,
+            )
+            err = f"tool call timed out after {TOOL_CALL_TIMEOUT_SECONDS}s"
+            raise RuntimeError(err) from None
         finally:
             self.pending_calls.pop(call.call_id, None)
 
@@ -329,10 +342,6 @@ class Session:
                     else:
                         logger.warning("No pending call for id={} sid={}", call_id, self.sid)
                 if matched == 0:
-                    # The session has no memory of these tool calls — likely the
-                    # subprocess died between the prior tool_calls response and
-                    # now, and the tool cycle cannot be resumed. Signal the
-                    # client rather than hang waiting for CLI output.
                     err = (
                         "tool_result(s) reference call_ids unknown to this session; "
                         "the underlying subprocess was respawned mid-cycle. "
@@ -343,9 +352,18 @@ class Session:
             if user_text is not None:
                 await self._send_user(user_text)
 
-            async for evt in self._iterate_events():
-                self.last_activity = time.monotonic()
-                yield evt
+            try:
+                async for evt in self._iterate_events():
+                    self.last_activity = time.monotonic()
+                    yield evt
+            except (asyncio.CancelledError, GeneratorExit):
+                # Client disconnected mid-turn. The subprocess is in an
+                # undefined state (possibly mid-stream, possibly blocked on
+                # an orphaned tool call). Mark the session dead so the next
+                # request spawns a fresh subprocess via --resume.
+                logger.warning("Session {} turn interrupted; marking for respawn", self.sid)
+                self._closed = True
+                raise
 
     async def _send_user(self, text: str) -> None:
         assert self._proc is not None and self._proc.stdin is not None  # noqa: S101

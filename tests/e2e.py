@@ -266,6 +266,56 @@ raw = json.dumps(r)
 check("requires a session header" in raw, "T10 stateless+tools rejected",
       f"got {raw[:150]}")
 
+# --- T11: client disconnect then reconnect — session must be reusable ---
+print("=== T11 client disconnect then reconnect ===")
+post("/v1/chat/completions", {
+    "model": MODEL,
+    "messages": [{"role": "user", "content": "reply OK"}],
+}, H("T11"))  # session warm
+try:
+    with httpx.stream("POST", f"{BASE}/v1/chat/completions",
+                       headers={**H("T11"), "content-type": "application/json"},
+                       timeout=1.5, json={
+        "model": MODEL,
+        "messages": [{"role": "user", "content": "Count slowly 1 to 100"}],
+        "stream": True,
+    }) as r:
+        for _ in r.iter_bytes():
+            pass  # will ReadTimeout mid-stream
+except (httpx.ReadTimeout, httpx.RemoteProtocolError):
+    pass
+time.sleep(2)
+r = post("/v1/chat/completions", {
+    "model": MODEL,
+    "messages": [{"role": "user", "content": "say RECOVERED only"}],
+}, H("T11"), timeout=30)
+check("RECOVERED" in content(r), "T11 session reusable after disconnect",
+      f"got {content(r)[:100]}")
+
+# --- T12: OpenCode-shape request (x-session-affinity + many tools + big system) ---
+print("=== T12 OpenCode-shape hello ===")
+opencode_tools = [
+    {"type": "function", "function": {
+        "name": nm,
+        "description": f"{nm} tool. " * 8,
+        "parameters": {"type": "object",
+            "properties": {"arg": {"type": "string"}}, "required": ["arg"]},
+    }}
+    for nm in ["read", "write", "edit", "bash", "grep", "glob",
+               "list_directory", "multi_edit", "web_fetch", "task", "todo_write"]
+]
+opencode_sys = "You are a coding assistant.\n" + ("Detailed instructions.\n" * 100)
+r = post("/v1/chat/completions", {
+    "model": "claude-sonnet-4-6",
+    "messages": [
+        {"role": "system", "content": opencode_sys},
+        {"role": "user", "content": "hello"},
+    ],
+    "tools": opencode_tools,
+}, {"x-session-affinity": f"opencode-test-{RUN}"}, timeout=60)
+check(finish(r) in {"stop", "tool_calls"}, "T12 OpenCode hello succeeded",
+      f"got {finish(r)}")
+
 print()
 print(f"=== {passed} passed, {failed} failed ===")
 sys.exit(0 if failed == 0 else 1)

@@ -109,9 +109,13 @@ class SessionPool:
             except asyncio.CancelledError:
                 return
             now = time.monotonic()
+            # Only reap sessions that are idle AND not mid-turn. A locked
+            # session has an in-flight request; closing it would corrupt the
+            # generator that's reading stdout.
             stale = [
                 sid for sid, s in self._sessions.items()
                 if now - s.last_activity > IDLE_TIMEOUT_SECONDS
+                and not s.lock.locked()
             ]
             for sid in stale:
                 logger.info("Reaping idle session {}", sid)
