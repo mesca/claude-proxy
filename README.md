@@ -206,6 +206,17 @@ OpenCode sends Serena's tools to the proxy, Claude calls them via `tool_calls`, 
 
 **Test prompt**: `Show me the body of the main function and list all symbols in the entry point file.`
 
+### With custom system prompt
+
+Override OpenCode's default system prompt by pointing each agent at a prompt file:
+
+```json
+  "agent": {
+      "build": {"prompt": "{file:./prompts/anthropic.md}"},
+      "general": {"prompt": "{file:./prompts/anthropic.md}"}
+  }
+```
+
 ---
 
 ## Architecture
