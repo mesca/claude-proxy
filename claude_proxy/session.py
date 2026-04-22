@@ -171,6 +171,11 @@ class Session:
             "Spawning session {} with {} model={} effort={}",
             self.sid, session_flag, self.model, self.effort,
         )
+        logger.debug("→ cli system_prompt sid={} {!r}", self.sid, self.system_prompt)
+        logger.debug(
+            "→ cli tools sid={} {}",
+            self.sid, json.dumps(self.list_mcp_tools()),
+        )
         self._proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdin=asyncio.subprocess.PIPE,
@@ -337,6 +342,10 @@ class Session:
                 for call_id, content in tool_results.items():
                     call = self.pending_calls.get(call_id)
                     if call and not call.future.done():
+                        logger.debug(
+                            "→ cli tool_result sid={} call_id={} {}",
+                            self.sid, call_id, content,
+                        )
                         call.future.set_result(content)
                         matched += 1
                     else:
@@ -380,8 +389,9 @@ class Session:
         msg = json.dumps({
             "type": "user",
             "message": {"role": "user", "content": [{"type": "text", "text": text}]},
-        }) + "\n"
-        self._proc.stdin.write(msg.encode())
+        })
+        logger.debug("→ cli stdin sid={} {}", self.sid, msg)
+        self._proc.stdin.write((msg + "\n").encode())
         await self._proc.stdin.drain()
 
     async def _iterate_events(self) -> AsyncIterator[TurnEvent]:
